@@ -1,0 +1,131 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Agent type enum for agent-teams architecture (Phase 1)
+enum AgentTypeEnum {
+  PROJECT_MANAGER
+  FRONTEND
+  BACKEND
+  LAYOUT
+  STYLING
+  LOGIC
+  QA
+  RESEARCH
+  DESIGNER
+  ENGINEER
+  DESIGN_DIRECTOR
+}
+
+// Agent status model to track agent availability and health (Phase 1)
+model AgentStatus {
+  id             String        @id @default(uuid())
+  agentId        String        @unique
+  agentType      AgentTypeEnum
+  status         String        @default("idle") // 'idle', 'busy', 'offline'
+  lastHeartbeat  DateTime      @default(now()) @updatedAt
+  capabilities   String[]      @default([]) // ['html', 'css', 'javascript'] etc
+  currentTaskId  String?       // Currently executing task
+  metadata       Json?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  @@index([status])
+  @@index([agentType])
+  @@index([lastHeartbeat])
+}
+
+// Task queue model for autonomous task claiming (Phase 1)
+model TaskQueue {
+  id               String        @id @default(uuid())
+  taskId           String        // Reference to Task.id
+  projectId        String        // For quick filtering
+  agentType        AgentTypeEnum // Preferred agent type
+  priority         String        @default("MEDIUM") // 'HIGH', 'MEDIUM', 'LOW'
+  requiredCapabilities String[]  @default([]) // Capabilities needed
+  claimedBy        String?       // Agent ID that claimed this task
+  claimedAt        DateTime?
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  @@index([projectId])
+  @@index([agentType])
+  @@index([priority])
+  @@index([claimedBy])
+  @@index([claimedAt])
+}
+
+model Project {
+  id              String   @id @default(uuid())
+  name            String
+  description     String   @db.Text
+  status          String   @default("in_progress") // 'in_progress', 'completed', 'failed'
+  designBrief     String?  @db.Text
+  researchOutput  String?  @db.Text // JSON string from ResearchAgent
+  qaReport        String?  @db.Text // JSON string from QAAgent
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  messages        Message[]
+  tasks           Task[]
+}
+
+model Message {
+  id              String   @id @default(uuid())
+  projectId       String
+  project         Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  fromAgent       String   // 'PROJECT_MANAGER', 'ENGINEER', 'USER'
+  toAgent         String   // 'PROJECT_MANAGER', 'ENGINEER', 'USER'
+  messageType     String   // 'PROJECT_PLAN', 'TASK_ASSIGNMENT', etc.
+  content         String   @db.Text
+  codeOutput      String?  @db.Text
+  taskId          String?
+  threadId        String?  // Message threading for conversations (agent-teams Phase 2)
+  parentMessageId String?  // Parent message in thread for agent-teams messaging (Phase 2)
+  createdAt       DateTime @default(now())
+  metadata        Json?    // Store questions, blockers, etc.
+
+  @@index([projectId])
+  @@index([createdAt])
+  @@index([threadId])
+  @@index([parentMessageId])
+}
+
+model Task {
+  id                  String    @id @default(uuid())
+  projectId           String
+  project             Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  taskId              String    // 'PM-001', 'PM-002', etc.
+  description         String    @db.Text
+  status              String    @default("TODO") // 'TODO', 'IN_PROGRESS', 'COMPLETE', 'BLOCKED', 'FAILED'
+  priority            String    @default("MEDIUM") // 'HIGH', 'MEDIUM', 'LOW'
+  estimatedHours      Float?
+  actualHours         Float?
+  dependencies        String[]  @default([]) // Array of task IDs
+  blockerMessage      String?   @db.Text
+  generatedCode       String?   @db.Text
+  // Agent-teams fields for autonomous claiming and execution (Phase 1)
+  assignedAgent       String?   // Preferred agent type (for backward compat, nullable)
+  claimedBy           String?   // Agent ID that claimed this task
+  claimedAt           DateTime? // When task was claimed
+  completedBy         String?   // Agent ID that completed this task
+  completedAt         DateTime? // When task was completed
+  requiredCapabilities String[]  @default([]) // Required capabilities for execution
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  @@unique([projectId, taskId])
+  @@index([projectId])
+  @@index([status])
+  @@index([claimedBy])
+  @@index([claimedAt])
+  @@index([completedBy])
+  @@index([completedAt])
+}

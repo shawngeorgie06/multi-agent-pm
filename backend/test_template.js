@@ -1,0 +1,12 @@
+const { TEMPLATES } = require('./dist/templates/templates.js');
+const habit = TEMPLATES.find(t => t.id === 'habit-tracker');
+console.log('Template found:', !!habit);
+console.log('HTML starts with:', habit.html.substring(0, 100));
+console.log('HTML length:', habit.html.length);
+console.log('HTML has id="hi":', habit.html.includes('id="hi"'));
+console.log('HTML has id="add":', habit.html.includes('id="add"'));
+console.log('HTML has id="list":', habit.html.includes('id="list"'));
+console.log('\nJS starts with:', habit.js.substring(0, 100));
+console.log('JS length:', habit.js.length);
+console.log('JS has function esc:', habit.js.includes('function esc'));
+console.log('JS has addHabit:', habit.js.includes('addHabit'));

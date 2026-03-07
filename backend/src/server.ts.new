@@ -1,0 +1,722 @@
+import express, { Express, Request, Response } from 'express';
+import cors from 'cors';
+import { createServer } from 'http';
+import dotenv from 'dotenv';
+import { SocketServer } from './websocket/SocketServer.js';
+import { AgentOrchestrator } from './agents/AgentOrchestrator.js';
+import { LayoutAgent } from './agents/LayoutAgent.js';
+import { StylingAgent } from './agents/StylingAgent.js';
+import { LogicAgent } from './agents/LogicAgent.js';
+import { CodeGeneratorService } from './services/CodeGeneratorService.js';
+import type { OllamaOptions } from './services/OllamaService.js';
+import prisma from './database/db.js';
+
+// Load environment variables
+dotenv.config();
+
+const app: Express = express();
+const httpServer = createServer(app);
+const socketServer = new SocketServer(httpServer);
+
+const PORT = process.env.PORT || 3001;
+const OLLAMA_API_URL = process.env.OLLAMA_API_URL || 'http://localhost:11434';
+const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'llama3.2:3b';
+
+// Optional Ollama options for speed. Set in .env: OLLAMA_NUM_PREDICT=2048, OLLAMA_NUM_CTX=4096
+const OLLAMA_OPTIONS: OllamaOptions = (() => {
+  const opts: OllamaOptions = {};
+  const numPredict = parseInt(process.env.OLLAMA_NUM_PREDICT || '', 10);
+  const numCtx = parseInt(process.env.OLLAMA_NUM_CTX || '', 10);
+  const numThread = parseInt(process.env.OLLAMA_NUM_THREAD || '', 10);
+  if (!isNaN(numPredict)) opts.num_predict = numPredict;
+  if (!isNaN(numCtx)) opts.num_ctx = numCtx;
+  if (!isNaN(numThread)) opts.num_thread = numThread;
+  return opts;
+})();
+
+// Middleware
+app.use(cors({ origin: '*' }));
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// Health check endpoint
+app.get('/health', (_req: Request, res: Response) => {
+  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+// Start project endpoint
+app.post('/api/projects', async (req: Request, res: Response) => {
+  try {
+    const { description } = req.body;
+
+    if (!description) {
+      return res.status(400).json({ error: 'Description is required' });
+    }
+
+    // Create a new project in the database
+    const project = await prisma.project.create({
+      data: {
+        name: description.substring(0, 100),
+        description,
+        status: 'in_progress',
+      },
+    });
+
+    // Emit project started event
+    socketServer.emitProjectStatus(project.id, 'started', 'Starting project…');
+
+    // Start the agent orchestrator in the background
+    startProjectPlanning(project.id, description);
+
+    res.json({
+      projectId: project.id,
+      message: 'Project created, planning started',
+    });
+  } catch (error) {
+    console.error('Error creating project:', error);
+    const message = error instanceof Error ? error.message : 'Failed to create project';
+    res.status(500).json({ error: message });
+  }
+});
+
+// List projects (recent first)
+app.get('/api/projects', async (req: Request, res: Response) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit as string) || 20, 50);
+    const projects = await prisma.project.findMany({
+      orderBy: { updatedAt: 'desc' },
+      take: limit,
+      select: {
+        id: true,
+        name: true,
+        description: true,
+        status: true,
+        createdAt: true,
+        updatedAt: true,
+        _count: { select: { messages: true, tasks: true } },
+      },
+    });
+    res.json(projects);
+  } catch (error) {
+    console.error('Error listing projects:', error);
+    res.status(500).json({ error: 'Failed to list projects' });
+  }
+});
+
+// Delete project (conversation)
+app.delete('/api/projects/:projectId', async (req: Request, res: Response) => {
+  try {
+    const { projectId } = req.params;
+    await prisma.project.delete({
+      where: { id: projectId },
+    });
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error deleting project:', error);
+    const message = error instanceof Error ? error.message : 'Failed to delete project';
+    res.status(500).json({ error: message });
+  }
+});
+
+// Get project details
+app.get('/api/projects/:projectId', async (req: Request, res: Response) => {
+  try {
+    const { projectId } = req.params;
+
+    const project = await prisma.project.findUnique({
+      where: { id: projectId },
+      include: {
+        messages: {
+          orderBy: { createdAt: 'asc' },
+        },
+        tasks: {
+          orderBy: { createdAt: 'asc' },
+        },
+      },
+    });
+
+    if (!project) {
+      return res.status(404).json({ error: 'Project not found' });
+    }
+
+    res.json(project);
+  } catch (error) {
+    console.error('Error fetching project:', error);
+    res.status(500).json({ error: 'Failed to fetch project' });
+  }
+});
+
+// Create task
+app.post('/api/projects/:projectId/tasks', async (req: Request, res: Response) => {
+  try {
+    const { projectId } = req.params;
+    const { description, status, priority, estimatedHours } = req.body;
+
+    if (!description || typeof description !== 'string') {
+      return res.status(400).json({ error: 'Description is required' });
+    }
+
+    const existingTasks = await prisma.task.findMany({
+      where: { projectId },
+      orderBy: { taskId: 'asc' },
+    });
+    const lastNum = existingTasks
+      .map((t) => parseInt(t.taskId.replace(/^PM-/, ''), 10))
+      .filter((n) => !isNaN(n))
+      .pop();
+    const nextNum = (lastNum ?? 0) + 1;
+    const taskId = `PM-${String(nextNum).padStart(3, '0')}`;
+
+    const task = await prisma.task.create({
+      data: {
+        projectId,
+        taskId,
+        description: description.trim(),
+        status: status || 'TODO',
+        priority: priority || 'MEDIUM',
+        estimatedHours: estimatedHours ?? null,
+        dependencies: [],
+      },
+    });
+
+    socketServer.emitTaskUpdate(projectId, task);
+    res.status(201).json(task);
+  } catch (error) {
+    console.error('Error creating task:', error);
+    const message = error instanceof Error ? error.message : 'Failed to create task';
+    res.status(500).json({ error: message });
+  }
+});
+
+// Pause project endpoint
+app.post('/api/projects/:projectId/pause', async (req: Request, res: Response) => {
+  try {
+    const { projectId } = req.params;
+
+    const project = await prisma.project.update({
+      where: { id: projectId },
+      data: { status: 'paused' },
+    });
+
+    socketServer.emitProjectStatus(projectId, 'paused', 'Project paused');
+    res.json({ status: 'paused', message: 'Project paused successfully' });
+  } catch (error) {
+    console.error('Error pausing project:', error);
+    const message = error instanceof Error ? error.message : 'Failed to pause project';
+    res.status(500).json({ error: message });
+  }
+});
+
+// Resume project endpoint
+app.post('/api/projects/:projectId/resume', async (req: Request, res: Response) => {
+  try {
+    const { projectId } = req.params;
+
+    const project = await prisma.project.update({
+      where: { id: projectId },
+      data: { status: 'in_progress' },
+    });
+
+    socketServer.emitProjectStatus(projectId, 'in_progress', 'Project resumed');
+    res.json({ status: 'in_progress', message: 'Project resumed successfully' });
+  } catch (error) {
+    console.error('Error resuming project:', error);
+    const message = error instanceof Error ? error.message : 'Failed to resume project';
+    res.status(500).json({ error: message });
+  }
+});
+
+const logPhase = (phase: string, detail?: string) => {
+  const ts = new Date().toISOString();
+  console.log(`[${ts}] ${phase}${detail ? `: ${detail}` : ''}`);
+};
+
+// Function to handle project planning
+async function startProjectPlanning(projectId: string, userRequest: string): Promise<void> {
+  try {
+    // Quick path for hardcoded template apps - use pre-built templates
+    const isWeatherApp = /weather|forecast|temperature|city|search/i.test(userRequest);
+    const isCalculator = /calculator|compute|calculate|math/i.test(userRequest);
+    const isTodoApp = /todo|task list|tasks|todo list/i.test(userRequest);
+    const isPomodoroTimer = /pomodoro|timer|focus|break/i.test(userRequest);
+    const isNoteApp = /note|notes|notepad|writing/i.test(userRequest);
+
+    const isTemplateApp = isWeatherApp || isCalculator || isTodoApp || isPomodoroTimer || isNoteApp;
+
+    if (isTemplateApp) {
+      let appType = 'app';
+      if (isWeatherApp) appType = 'weather app';
+      else if (isCalculator) appType = 'calculator';
+      else if (isTodoApp) appType = 'todo app';
+      else if (isPomodoroTimer) appType = 'Pomodoro timer';
+      else if (isNoteApp) appType = 'note app';
+
+      logPhase('PHASE', `${appType} detected - using templates`);
+      socketServer.emitProjectStatus(projectId, 'in_progress', `Creating ${appType}…`);
+
+      // Generate tasks for the detected app type
+      const layoutAgent = new LayoutAgent(OLLAMA_API_URL, OLLAMA_MODEL, OLLAMA_OPTIONS);
+      const stylingAgent = new StylingAgent(OLLAMA_API_URL, OLLAMA_MODEL, OLLAMA_OPTIONS);
+      const logicAgent = new LogicAgent(OLLAMA_API_URL, OLLAMA_MODEL, OLLAMA_OPTIONS);
+
+      let htmlCode = '';
+      let cssCode = '';
+      let jsCode = '';
+
+      try {
+        htmlCode = await layoutAgent.generateLayout(userRequest, { raw: '', designTokens: '', aesthetic: '', colorPalette: '' });
+        cssCode = await stylingAgent.generateStyles(userRequest, { raw: '', designTokens: '', aesthetic: '', colorPalette: '' }, htmlCode);
+        jsCode = await logicAgent.generateLogic(userRequest, { raw: '', designTokens: '', aesthetic: '', colorPalette: '' }, htmlCode);
+      } catch (err) {
+        console.error('Error generating template code:', err);
+      }
+
+      // Create 3 hardcoded tasks for template app
+      const templateTasks = [
+        {
+          taskId: 'LAYOUT',
+          description: 'Generate HTML structure',
+          status: 'COMPLETE',
+          priority: 'HIGH',
+          estimatedHours: 0.25,
+          generatedCode: htmlCode,
+        },
+        {
+          taskId: 'STYLING',
+          description: 'Generate CSS styling',
+          status: 'COMPLETE',
+          priority: 'HIGH',
+          estimatedHours: 0.25,
+          generatedCode: cssCode,
+        },
+        {
+          taskId: 'LOGIC',
+          description: 'Generate JavaScript logic',
+          status: 'COMPLETE',
+          priority: 'HIGH',
+          estimatedHours: 0.25,
+          generatedCode: jsCode,
+        },
+      ];
+
+      // Save tasks directly
+      for (const taskTemplate of templateTasks) {
+        const uniqueTaskId = `${taskTemplate.taskId}-${projectId.substring(0, 8)}`;
+        await prisma.task.upsert({
+          where: { projectId_taskId: { projectId, taskId: uniqueTaskId } },
+          update: {
+            generatedCode: taskTemplate.generatedCode,
+            status: 'COMPLETE',
+          },
+          create: {
+            projectId,
+            taskId: uniqueTaskId,
+            description: taskTemplate.description,
+            status: 'COMPLETE',
+            priority: 'HIGH',
+            estimatedHours: taskTemplate.estimatedHours,
+            generatedCode: taskTemplate.generatedCode,
+          },
+        });
+
+        socketServer.emitTaskUpdate(projectId, {
+          id: uniqueTaskId,
+          projectId,
+          taskId: uniqueTaskId,
+          description: taskTemplate.description,
+          generatedCode: taskTemplate.generatedCode,
+          status: 'COMPLETE',
+          priority: 'HIGH',
+          estimatedHours: taskTemplate.estimatedHours,
+          dependencies: [],
+          blockerMessage: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+      }
+
+      // Mark project as completed
+      await prisma.project.update({
+        where: { id: projectId },
+        data: { status: 'completed' },
+      });
+
+      socketServer.emitProjectStatus(projectId, 'completed', `${appType} is ready!`);
+      return; // Done!
+    }
+
+    logPhase('PHASE', 'Planning with PM agent');
+    socketServer.emitProjectStatus(projectId, 'in_progress', 'Planning with PM agent…');
+
+    const orchestrator = new AgentOrchestrator(5, OLLAMA_API_URL, OLLAMA_MODEL, socketServer, projectId, OLLAMA_OPTIONS);
+
+    let context;
+    try {
+      // Run the planning process with timeout protection
+      const planningPromise = orchestrator.startProjectPlanning(userRequest);
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('PM planning timeout (5 minutes) - Ollama may be unresponsive')), 5 * 60 * 1000)
+      );
+
+      context = await Promise.race([planningPromise, timeoutPromise]) as any;
+
+      logPhase('PHASE', 'PM/Engineer conversation complete');
+    } catch (planningError) {
+      const errMsg = planningError instanceof Error ? planningError.message : String(planningError);
+      console.error('[SERVER] PM planning error:', errMsg);
+
+      // Emit timeout/planning error to frontend
+      socketServer.emitBlockerAlert(projectId, `PM Planning Error: ${errMsg}`);
+      socketServer.emitProjectStatus(projectId, 'in_progress', 'Planning encountered an error, attempting to recover with fallback tasks...');
+
+      // Create a minimal context with fallback to avoid total failure
+      context = orchestrator.getContext();
+    }
+
+    const designBrief = orchestrator.getDesignBrief();
+
+    // Save design brief to project
+    if (designBrief) {
+      await prisma.project.update({
+        where: { id: projectId },
+        data: { designBrief: designBrief.raw },
+      });
+    }
+
+    // Save all messages and tasks to the database
+    let messages = orchestrator.getAllMessages();
+    let tasks = orchestrator.getTasks();
+
+    // If no tasks were extracted, use fallback
+    if (!tasks || tasks.length === 0) {
+      console.log('[SERVER] No tasks extracted from PM/Engineer conversation - using fallback tasks');
+      const { MessageParser } = await import('./services/MessageParser.js');
+      tasks = MessageParser.generateFallbackTasks(userRequest);
+      socketServer.emitBlockerAlert(projectId, 'No tasks extracted from PM response - using fallback generic tasks instead');
+    }
+
+    logPhase('PHASE', 'Saving messages and tasks');
+    socketServer.emitProjectStatus(projectId, 'in_progress', 'Saving messages and tasks…');
+
+    // Save messages and emit with DB id + streamingMessageId for frontend to clear streaming state
+    for (const msg of messages) {
+      const savedMessage = await prisma.message.create({
+        data: {
+          projectId,
+          fromAgent: msg.fromAgent,
+          toAgent: msg.toAgent,
+          messageType: msg.messageType,
+          content: msg.content,
+          codeOutput: msg.codeOutput,
+          metadata: msg.metadata as any,
+        },
+      });
+
+      const streamingMessageId = (msg.metadata as Record<string, unknown>)?.streamingMessageId as string | undefined;
+      socketServer.emitAgentMessage(projectId, savedMessage, streamingMessageId);
+    }
+
+    // Save tasks using upsert (create or update if already exists)
+    const savedTasks: Array<{ id: string; taskId: string; description: string; status: string; priority: string; estimatedHours?: number | null; dependencies: string[] }> = [];
+    for (let i = 0; i < tasks.length; i++) {
+      const task = tasks[i];
+      // Generate unique task ID by using project ID suffix
+      const uniqueTaskId = `${task.taskId}-${projectId.substring(0, 8)}`;
+
+      try {
+        const savedTask = await prisma.task.upsert({
+          where: {
+            projectId_taskId: {
+              projectId,
+              taskId: uniqueTaskId,
+            },
+          },
+          update: {
+            description: task.description,
+            status: task.status,
+            priority: task.priority,
+            estimatedHours: task.estimatedHours,
+            dependencies: task.dependencies || [],
+          },
+          create: {
+            projectId,
+            taskId: uniqueTaskId,
+            description: task.description,
+            status: task.status,
+            priority: task.priority,
+            estimatedHours: task.estimatedHours,
+            dependencies: task.dependencies || [],
+          },
+        });
+        savedTasks.push(savedTask);
+        socketServer.emitTaskUpdate(projectId, savedTask);
+      } catch (err) {
+        console.error(`Failed to upsert task ${uniqueTaskId}:`, err);
+        // Skip this task and continue
+      }
+    }
+
+    // Generate code using specialized agents (Layout, Styling, Logic)
+    logPhase('PHASE', 'Starting code generation (Layout/Styling/Logic)');
+    socketServer.emitProjectStatus(projectId, 'in_progress', 'Generating code…');
+    const project = await prisma.project.findUnique({ where: { id: projectId } });
+    const projectDesc = project?.description ?? '';
+
+    const isWebProject = /website|web page|html|calculator|app|ui|frontend|page|landing/i.test(projectDesc);
+    const useSpecializedAgents = isWebProject && designBrief;
+
+    if (useSpecializedAgents && designBrief && savedTasks.length > 0) {
+      // Classify tasks and run specialized agents
+      const layoutAgent = new LayoutAgent(OLLAMA_API_URL, OLLAMA_MODEL, OLLAMA_OPTIONS);
+      const stylingAgent = new StylingAgent(OLLAMA_API_URL, OLLAMA_MODEL, OLLAMA_OPTIONS);
+      const logicAgent = new LogicAgent(OLLAMA_API_URL, OLLAMA_MODEL, OLLAMA_OPTIONS);
+
+      const layoutTaskIdx = savedTasks.findIndex((t) =>
+        /structure|html|layout|create|build|markup|ui structure|set up|implement.*html/i.test(t.description) &&
+        !/logic|javascript|style|css|design|visual/i.test(t.description)
+      );
+      const stylingTaskIdx = savedTasks.findIndex((t) =>
+        /style|css|design|visual|appearance|styling/i.test(t.description)
+      );
+      const logicTaskIdx = savedTasks.findIndex((t) =>
+        /logic|javascript|interactivity|behavior|functionality|js|implement.*click|add.*interactivity/i.test(t.description)
+      );
+
+      const layoutTask = layoutTaskIdx >= 0 ? layoutTaskIdx : 0;
+      const stylingTask = stylingTaskIdx >= 0 ? stylingTaskIdx : Math.min(1, savedTasks.length - 1);
+      const logicTask = logicTaskIdx >= 0 ? logicTaskIdx : Math.min(2, savedTasks.length - 1);
+
+      const taskContext = savedTasks.map((t) => t.description).join('\n');
+
+      try {
+        const tasksToUpdate = new Set([layoutTask, stylingTask, logicTask]);
+        const combineIntoOne = tasksToUpdate.size === 1 && savedTasks.length >= 1;
+
+        // Layout runs first (non-streaming - no agent messages during this phase)
+        logPhase('AGENT', 'Layout agent generating HTML (this can take 1–3 min)');
+        socketServer.emitProjectStatus(projectId, 'in_progress', 'Generating layout (HTML)…');
+        socketServer.emitAgentActivity(projectId, 'LAYOUT', 'Generating HTML structure… (no streaming—waiting for Ollama)');
+        const htmlOutput = await layoutAgent.generateLayout(projectDesc, designBrief, taskContext);
+        logPhase('AGENT', 'Layout agent done');
+
+        logPhase('AGENT', 'Styling agent generating CSS (this can take 1–3 min)');
+        socketServer.emitProjectStatus(projectId, 'in_progress', 'Generating styles (CSS)…');
+        socketServer.emitAgentActivity(projectId, 'STYLING', 'Generating CSS styles… (no streaming—waiting for Ollama)');
+        const cssOutput = await stylingAgent.generateStyles(projectDesc, designBrief, htmlOutput, taskContext);
+        logPhase('AGENT', 'Styling agent done');
+
+        logPhase('AGENT', 'Logic agent generating JavaScript (this can take 1–3 min)');
+        socketServer.emitProjectStatus(projectId, 'in_progress', 'Generating logic (JavaScript)…');
+        socketServer.emitAgentActivity(projectId, 'LOGIC', 'Generating JavaScript logic… (no streaming—waiting for Ollama)');
+        const jsOutput = await logicAgent.generateLogic(projectDesc, designBrief, htmlOutput, taskContext);
+        logPhase('AGENT', 'Logic agent done');
+
+        if (combineIntoOne && savedTasks[layoutTask]?.id) {
+          try {
+            const combined = `${htmlOutput}\n\n<style>${cssOutput}</style>\n\n<script>${jsOutput}</script>`;
+            const updated = await prisma.task.update({
+              where: { id: savedTasks[layoutTask].id },
+              data: { generatedCode: combined, status: 'COMPLETE' },
+            });
+            socketServer.emitTaskUpdate(projectId, updated);
+          } catch (err) {
+            console.error(`Failed to update combined code for task ${savedTasks[layoutTask].taskId}:`, err);
+          }
+        } else {
+          if (layoutTask < savedTasks.length && savedTasks[layoutTask]?.id) {
+            try {
+              const updated = await prisma.task.update({
+                where: { id: savedTasks[layoutTask].id },
+                data: { generatedCode: htmlOutput, status: 'COMPLETE' },
+              });
+              socketServer.emitTaskUpdate(projectId, updated);
+            } catch (err) {
+              console.error(`Failed to update layout code for task ${savedTasks[layoutTask].taskId}:`, err);
+            }
+          }
+          if (stylingTask < savedTasks.length && stylingTask !== layoutTask && savedTasks[stylingTask]?.id) {
+            try {
+              const updated = await prisma.task.update({
+                where: { id: savedTasks[stylingTask].id },
+                data: { generatedCode: cssOutput, status: 'COMPLETE' },
+              });
+              socketServer.emitTaskUpdate(projectId, updated);
+            } catch (err) {
+              console.error(`Failed to update styling code for task ${savedTasks[stylingTask].taskId}:`, err);
+            }
+          }
+          if (logicTask < savedTasks.length && logicTask !== layoutTask && logicTask !== stylingTask && savedTasks[logicTask]?.id) {
+            try {
+              const updated = await prisma.task.update({
+                where: { id: savedTasks[logicTask].id },
+                data: { generatedCode: jsOutput, status: 'COMPLETE' },
+              });
+              socketServer.emitTaskUpdate(projectId, updated);
+            } catch (err) {
+              console.error(`Failed to update logic code for task ${savedTasks[logicTask].taskId}:`, err);
+            }
+          }
+        }
+
+        // Mark any remaining tasks as COMPLETE (e.g., if 4+ tasks extracted)
+        for (let i = 0; i < savedTasks.length; i++) {
+          if (i !== layoutTask && i !== stylingTask && i !== logicTask && savedTasks[i]?.id) {
+            try {
+              const updated = await prisma.task.update({
+                where: { id: savedTasks[i].id },
+                data: { status: 'COMPLETE' },
+              });
+              socketServer.emitTaskUpdate(projectId, updated);
+            } catch (err) {
+              console.error(`Failed to mark task ${savedTasks[i].taskId} as COMPLETE:`, err);
+            }
+          }
+        }
+      } catch (err) {
+        console.error('Specialized agent code generation failed, falling back to generic:', err);
+        // Fall through to generic code generator
+      }
+    }
+
+    // Fallback: use generic CodeGenerator for non-web or if specialized agents failed
+    const projectForFallback = await prisma.project.findUnique({ where: { id: projectId } });
+    const tasksWithCode = await prisma.task.findMany({
+      where: { projectId, generatedCode: { not: null } },
+    });
+    if (tasksWithCode.length === 0) {
+      const codeGenerator = new CodeGeneratorService(OLLAMA_API_URL, OLLAMA_MODEL, OLLAMA_OPTIONS);
+      const projectDescFallback = projectForFallback?.description ?? '';
+      for (let i = 0; i < savedTasks.length; i++) {
+        const savedTask = savedTasks[i];
+        if (!savedTask || !savedTask.id) {
+          console.error(`Skipping task ${i}: savedTask is invalid`, savedTask);
+          continue;
+        }
+
+        // Check if project is paused — poll until resumed
+        let currentProject = await prisma.project.findUnique({ where: { id: projectId } });
+        while (currentProject?.status === 'paused') {
+          logPhase('PHASE', `Project paused — waiting to resume before processing ${savedTask.taskId}…`);
+          socketServer.emitProjectStatus(projectId, 'paused', `Paused (waiting to resume before task ${i + 1}/${savedTasks.length})…`);
+          await new Promise((resolve) => setTimeout(resolve, 2000)); // Poll every 2 seconds
+          currentProject = await prisma.project.findUnique({ where: { id: projectId } });
+        }
+
+        logPhase('AGENT', `CodeGenerator for ${savedTask.taskId} (${i + 1}/${savedTasks.length})`);
+        socketServer.emitProjectStatus(projectId, 'in_progress', `Generating code for task ${savedTask.taskId} (${i + 1}/${savedTasks.length})…`);
+        socketServer.emitAgentActivity(projectId, 'CODE_GENERATOR', `Generating code for ${savedTask.taskId}… (no streaming—waiting for Ollama)`);
+        try {
+          const generatedCode = await codeGenerator.generateCodeForTask(
+            {
+              taskId: savedTask.taskId,
+              description: savedTask.description,
+              priority: savedTask.priority,
+              estimatedHours: savedTask.estimatedHours,
+            },
+            projectDescFallback,
+            savedTasks.map((t) => ({
+              taskId: t.taskId,
+              description: t.description,
+              priority: t.priority,
+              estimatedHours: t.estimatedHours,
+            }))
+          );
+          const updatedTask = await prisma.task.update({
+            where: { id: savedTask.id },
+            data: { generatedCode, status: 'COMPLETE' },
+          });
+          socketServer.emitTaskUpdate(projectId, updatedTask);
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          console.error(`Code generation failed for task ${savedTask.taskId}:`, errMsg);
+          try {
+            const failedTask = await prisma.task.update({
+              where: { id: savedTask.id },
+              data: { status: 'FAILED', blockerMessage: errMsg },
+            });
+            socketServer.emitTaskUpdate(projectId, failedTask);
+            socketServer.emitTaskFailed(projectId, savedTask.taskId, errMsg);
+          } catch (updateErr) {
+            console.error(`Failed to mark task as FAILED: ${updateErr}`);
+          }
+        }
+      }
+    }
+
+    logPhase('PHASE', 'Updating task statuses');
+    socketServer.emitProjectStatus(projectId, 'in_progress', 'Updating task statuses…');
+    const allTasks = await prisma.task.findMany({ where: { projectId } });
+    const statusByTaskId = new Map(allTasks.map((t) => [t.taskId, t.status]));
+    for (const task of allTasks) {
+      // Skip tasks that are already complete or failed
+      if (task.status === 'COMPLETE' || task.status === 'FAILED') continue;
+
+      const deps = (task.dependencies as string[]) || [];
+      const allDepsComplete = deps.length === 0 || deps.every((depId) => statusByTaskId.get(depId) === 'COMPLETE');
+
+      if (!allDepsComplete) {
+        // Mark as blocked if dependencies aren't complete
+        const updated = await prisma.task.update({
+          where: { id: task.id },
+          data: { status: 'BLOCKED' },
+        });
+        socketServer.emitTaskUpdate(projectId, updated);
+        statusByTaskId.set(task.taskId, 'BLOCKED');
+      }
+      // Otherwise leave task as TODO if no code was generated (don't force to IN_PROGRESS)
+    }
+
+    // Update project status
+    await prisma.project.update({
+      where: { id: projectId },
+      data: { status: 'completed' },
+    });
+
+    socketServer.emitProjectStatus(projectId, 'completed', 'Completed');
+    socketServer.emitAgentActivity(projectId, 'SYSTEM', ''); // Empty message = clear activity
+
+    logPhase('PHASE', 'Project completed successfully');
+  } catch (error) {
+    console.error(`Error during project planning for ${projectId}:`, error);
+
+    const errMsg = error instanceof Error ? error.message : String(error);
+
+    // Update project status to failed
+    await prisma.project.update({
+      where: { id: projectId },
+      data: { status: 'failed' },
+    });
+
+    socketServer.emitProjectStatus(projectId, 'failed', 'Failed');
+    socketServer.emitBlockerAlert(projectId, errMsg);
+  }
+}
+
+// Start server
+httpServer.listen(PORT, () => {
+  console.log(`\n${'='.repeat(60)}`);
+  console.log(`Multi-Agent PM Backend Server`);
+  console.log(`Running on http://localhost:${PORT}`);
+  console.log(`Ollama API: ${OLLAMA_API_URL}`);
+  console.log(`Ollama Model: ${OLLAMA_MODEL}`);
+  if (Object.keys(OLLAMA_OPTIONS).length > 0) {
+    console.log(`Ollama Options: ${JSON.stringify(OLLAMA_OPTIONS)}`);
+  }
+  console.log(`Connected clients: ${socketServer.getConnectedClientCount()}`);
+  console.log(`${'='.repeat(60)}\n`);
+});
+
+// Graceful shutdown
+process.on('SIGINT', async () => {
+  console.log('\nShutting down...');
+  await prisma.$disconnect();
+  process.exit(0);
+});
+
+process.on('SIGTERM', async () => {
+  console.log('\nShutting down...');
+  await prisma.$disconnect();
+  process.exit(0);
+});
+
+export { app, httpServer };

@@ -1,0 +1,48 @@
+node_modules/
+dist/
+.env
+.env.local
+.DS_Store
+*.log
+.idea/
+.vscode/
+.env.*.local
+.claude/
+.plan/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+pgdata/
+
+# Build
+dist/
+build/
+.next/
+out/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.sublime-project
+.sublime-workspace
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Testing
+coverage/
+.nyc_output/
+
+# Docker
+.dockerignore

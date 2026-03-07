@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Generated App</title>
+    <style>
+#calculator-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 20px;
+    border: 1px solid #ccc;
+    border-radius: 10px;
+    box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+}
+
+#display-field {
+    width: 100%;
+    height: 40px;
+    padding: 10px;
+    font-size: 24px;
+    font-weight: bold;
+    border: none;
+    border-radius: 5px;
+    background-color: #f9f9f9;
+    box-shadow: inset 0 0 10px rgba(0, 0, 0, 0.1);
+}
+
+#clear-btn, #delete-btn {
+    width: 40px;
+    height: 30px;
+    font-size: 18px;
+    cursor: pointer;
+    border: none;
+    border-radius: 5px;
+    background-color: #4CAF50;
+    color: #fff;
+    box-shadow: inset 0 0 10px rgba(0, 0, 0, 0.1);
+}
+
+#clear-btn:hover, #delete-btn:hover {
+    background-color: #3e8e41;
+}
+
+button {
+    margin: 5px;
+}
+
+button:hover {
+    transform: scale(1.05);
+}
+
+ul {
+    list-style-type: none;
+    padding: 0;
+    margin: 0;
+}
+
+li {
+    display: inline-block;
+    width: 40px;
+    height: 30px;
+    text-align: center;
+    line-height: 30px;
+    border-radius: 5px;
+    background-color: #f9f9f9;
+    box-shadow: inset 0 0 10px rgba(0, 0, 0, 0.1);
+}
+
+button:hover {
+    transform: scale(1.05);
+}
+
+#0-btn, #1-btn, #2-btn, #3-btn, #4-btn, #5-btn, #6-btn, #7-btn, #8-btn, #9-btn {
+    background-image: linear-gradient(to bottom, #fff 50%, #ccc 50%);
+}
+
+button:hover {
+    transform: scale(1.05);
+}
+    </style>
+</head>
+<body>
+<main class="calculator-container">
+        <section class="calculator-form">
+            <input id="number-input" type="number" aria-label="Number input">
+            <button id="add-btn">+</button>
+            <button id="subtract-btn">-</button>
+            <button id="multiply-btn">*</button>
+            <button id="divide-btn">/</button>
+            <button id="clear-btn">Clear</button>
+        </section>
+    </main>
+    <script>
+const displayField = document.getElementById('display-field');
+const clearBtn = document.getElementById('clear-btn');
+const deleteBtn = document.getElementById('delete-btn');
+const zeroBtn = document.getElementById('0-btn');
+const oneBtn = document.getElementById('1-btn');
+const twoBtn = document.getElementById('2-btn');
+const threeBtn = document.getElementById('3-btn');
+const fourBtn = document.getElementById('4-btn');
+const fiveBtn = document.getElementById('5-btn');
+const sixBtn = document.getElementById('6-btn');
+const sevenBtn = document.getElementById('7-btn');
+const eightBtn = document.getElementById('8-btn');
+const nineBtn = document.getElementById('9-btn');
+
+displayField.addEventListener('input', updateDisplay);
+clearBtn.addEventListener('click', clearDisplay);
+deleteBtn.addEventListener('click', deleteCharacter);
+zeroBtn.addEventListener('click', addZero);
+oneBtn.addEventListener('click', addOne);
+twoBtn.addEventListener('click', addTwo);
+threeBtn.addEventListener('click', addThree);
+fourBtn.addEventListener('click', addFour);
+fiveBtn.addEventListener('click', addFive);
+sixBtn.addEventListener('click', addSix);
+sevenBtn.addEventListener('click', addSeven);
+eightBtn.addEventListener('click', addEight);
+nineBtn.addEventListener('click', addNine);
+
+function updateDisplay(event) {
+    displayField.value = event.target.value;
+}
+
+function clearDisplay() {
+    displayField.value = '';
+}
+
+function deleteCharacter() {
+    let text = displayField.value.slice(0, -1);
+    if(text === '') text = '0';
+    displayField.value = text;
+}
+
+function addZero() {
+    let text = displayField.value + '0';
+    displayField.value = text;
+}
+
+function addOne() {
+    let text = displayField.value + '1';
+    displayField.value = text;
+}
+
+function addTwo() {
+    let text = displayField.value + '2';
+    displayField.value = text;
+}
+
+function addThree() {
+    let text = displayField.value + '3';
+    displayField.value = text;
+}
+
+function addFour() {
+    let text = displayField.value + '4';
+    displayField.value = text;
+}
+
+function addFive() {
+    let text = displayField.value + '5';
+    displayField.value = text;
+}
+
+function addSix() {
+    let text = displayField.value + '6';
+    displayField.value = text;
+}
+
+function addSeven() {
+    let text = displayField.value + '7';
+    displayField.value = text;
+}
+
+function addEight() {
+    let text = displayField.value + '8';
+    displayField.value = text;
+}
+
+function addNine() {
+    let text = displayField.value + '9';
+    displayField.value = text;
+}
+    </script>
+</body>
+</html>
