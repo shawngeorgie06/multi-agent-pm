@@ -1,0 +1,21 @@
+/* Fixed fullscreen canvas */
+#background-canvas {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  z-index: -1;
+  display: block;
+  background: #0a0e27;
+}
+
+/* Ensure canvas doesn't create scrollbars */
+#background-canvas {
+  pointer-events: none;
+}
+
+/* Fallback background for browsers without WebGL */
+body {
+  background: linear-gradient(135deg, #0a0e27 0%, #1a0f3f 100%);
+}

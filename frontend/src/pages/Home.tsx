@@ -2,6 +2,7 @@ import { useLocation } from "wouter";
 import { useState } from "react";
 import { ArrowRight, Zap, Network, Cpu, Workflow, TrendingUp, Play, ChevronDown, Loader2 } from "lucide-react";
 import { API_URL } from "@/lib/api";
+import '@/styles/background.css';
 
 /**
  * Homepage - Bold, High-Contrast Design
@@ -194,7 +195,7 @@ export default function Home() {
             </div>
 
             {/* Project Creation Form */}
-            <form onSubmit={handleCreateProject} className="space-y-4 max-w-md">
+            <form onSubmit={handleCreateProject} className="space-y-6 max-w-md">
               <div>
                 <textarea
                   value={projectInput}
@@ -207,6 +208,53 @@ export default function Home() {
                   rows={3}
                 />
                 {error && <p className="text-red-600 font-bold text-sm">{error}</p>}
+              </div>
+
+              {/* Quick Templates */}
+              <div className="space-y-3">
+                <p className="text-xs font-bold text-gray-600">QUICK START TEMPLATES:</p>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setProjectInput('Build a scientific calculator that can perform basic math operations (add, subtract, multiply, divide), plus advanced functions like square root, percentage, and power (exponent). Include a clear display for results, history of previous calculations, and clear/delete buttons.');
+                      setError(null);
+                    }}
+                    className="px-3 py-2 border-2 border-black rounded-lg hover:bg-black hover:text-white transition-colors font-bold text-xs text-center"
+                  >
+                    🧮 Calculator
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setProjectInput('Build a todo application with an input field to add new tasks, a list displaying all tasks, checkboxes to mark tasks as complete, delete buttons for each task, and a clear all completed button. Include localStorage persistence so tasks are saved across page refreshes.');
+                      setError(null);
+                    }}
+                    className="px-3 py-2 border-2 border-black rounded-lg hover:bg-black hover:text-white transition-colors font-bold text-xs text-center"
+                  >
+                    ✅ Todo List
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setProjectInput('Build a weather dashboard with a search input to find cities, display current weather with temperature and conditions, show a 7-day forecast, include weather icons, add loading states, and error handling for invalid locations.');
+                      setError(null);
+                    }}
+                    className="px-3 py-2 border-2 border-black rounded-lg hover:bg-black hover:text-white transition-colors font-bold text-xs text-center"
+                  >
+                    🌤️ Weather
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setProjectInput('Build an e-commerce shopping site with a product listing grid, product detail views, add to cart functionality, a shopping cart modal showing items and quantities, price totals, remove from cart buttons, and a checkout button with mock order processing.');
+                      setError(null);
+                    }}
+                    className="px-3 py-2 border-2 border-black rounded-lg hover:bg-black hover:text-white transition-colors font-bold text-xs text-center"
+                  >
+                    🛍️ E-Commerce
+                  </button>
+                </div>
               </div>
               <button
                 type="submit"
