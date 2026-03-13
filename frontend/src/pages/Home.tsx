@@ -2,6 +2,7 @@ import { useLocation } from "wouter";
 import { useState } from "react";
 import { ArrowRight, Zap, Network, Cpu, Workflow, TrendingUp, Play, ChevronDown, Loader2 } from "lucide-react";
 import { API_URL } from "@/lib/api";
+import { BackgroundSceneComponent } from "@/components/BackgroundScene";
 import '@/styles/background.css';
 
 /**
@@ -146,6 +147,7 @@ export default function Home() {
 
   return (
     <div className="min-h-screen bg-white text-black">
+      <BackgroundSceneComponent />
       {/* Header */}
       <header className="border-b-2 border-black sticky top-0 bg-white z-50">
         <div className="container flex items-center justify-between py-6">
