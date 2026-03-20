@@ -102,3 +102,72 @@ class TestLoadSchedule:
         for entry in result:
             for d in entry["days"]:
                 assert 0 <= d <= 5
+
+
+from schedule import get_empty_rooms
+
+MONDAY = 0
+
+SAMPLE_SCHEDULE = [
+    # KUPF 207: class 9am-10am and 1pm-2pm on Mon
+    {"building": "KUPF", "room": "207", "days": [MONDAY], "time_start": time(9, 0),  "time_end": time(10, 0)},
+    {"building": "KUPF", "room": "207", "days": [MONDAY], "time_start": time(13, 0), "time_end": time(14, 0)},
+    # KUPF 315: class 10am-11am on Mon
+    {"building": "KUPF", "room": "315", "days": [MONDAY], "time_start": time(10, 0), "time_end": time(11, 0)},
+    # TIER 101: Tuesday only
+    {"building": "TIER", "room": "101", "days": [1], "time_start": time(9, 0), "time_end": time(17, 0)},
+]
+
+
+class TestGetEmptyRooms:
+    def test_occupied_room_excluded(self):
+        # 9:30am Monday — KUPF 207 has class 9-10am, so it's occupied
+        result = get_empty_rooms(SAMPLE_SCHEDULE, weekday=MONDAY, now=time(9, 30))
+        rooms = [(r["building"], r["room"]) for r in result]
+        assert ("KUPF", "207") not in rooms
+
+    def test_empty_room_included(self):
+        # 9:30am Monday — KUPF 315 is empty (its class is 10-11)
+        result = get_empty_rooms(SAMPLE_SCHEDULE, weekday=MONDAY, now=time(9, 30))
+        rooms = [(r["building"], r["room"]) for r in result]
+        assert ("KUPF", "315") in rooms
+
+    def test_minutes_until_next_correct(self):
+        # 9:30am Monday — KUPF 315 next class at 10:00 = 30 min
+        result = get_empty_rooms(SAMPLE_SCHEDULE, weekday=MONDAY, now=time(9, 30))
+        kupf_315 = next(r for r in result if r["room"] == "315" and r["building"] == "KUPF")
+        assert kupf_315["minutes_until_next"] == 30
+
+    def test_minutes_until_next_null_when_no_more_classes(self):
+        # 11:30am Monday — KUPF 315 had its only class at 10-11, done for today
+        result = get_empty_rooms(SAMPLE_SCHEDULE, weekday=MONDAY, now=time(11, 30))
+        kupf_315 = next(r for r in result if r["room"] == "315" and r["building"] == "KUPF")
+        assert kupf_315["minutes_until_next"] is None
+
+    def test_class_end_boundary_room_is_empty(self):
+        # 10:00am exactly — KUPF 207's first class just ended, room is free until 1pm
+        result = get_empty_rooms(SAMPLE_SCHEDULE, weekday=MONDAY, now=time(10, 0))
+        rooms = [(r["building"], r["room"]) for r in result]
+        assert ("KUPF", "207") in rooms
+
+    def test_room_with_no_classes_today_appears_with_null(self):
+        # TIER 101 has no Monday classes — appears as empty, free all day
+        result = get_empty_rooms(SAMPLE_SCHEDULE, weekday=MONDAY, now=time(9, 30))
+        tier = next((r for r in result if r["building"] == "TIER" and r["room"] == "101"), None)
+        assert tier is not None
+        assert tier["minutes_until_next"] is None
+
+    def test_sorted_by_building_then_room(self):
+        result = get_empty_rooms(SAMPLE_SCHEDULE, weekday=MONDAY, now=time(12, 0))
+        buildings = [r["building"] for r in result]
+        assert buildings == sorted(buildings)
+        kupf_rooms = [r["room"] for r in result if r["building"] == "KUPF"]
+        assert kupf_rooms == sorted(kupf_rooms)
+
+    def test_building_filter(self):
+        result = get_empty_rooms(SAMPLE_SCHEDULE, weekday=MONDAY, now=time(9, 30), building="KUPF")
+        assert all(r["building"] == "KUPF" for r in result)
+
+    def test_building_filter_no_match(self):
+        result = get_empty_rooms(SAMPLE_SCHEDULE, weekday=MONDAY, now=time(9, 30), building="NONEXISTENT")
+        assert result == []
