@@ -3,6 +3,7 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { ParticleSystem } from './particle-system.js';
+import { NeuralNetworkVisualization } from './neural-network.js';
 import { createBackgroundGeometries, createParticleGeometry } from './geometry-utils.js';
 
 export class BackgroundScene {
@@ -16,6 +17,7 @@ export class BackgroundScene {
     this.scroll = 0;
     this.time = 0;
     this.particleSystem = null;
+    this.neuralNetwork = null;
     this.composer = null;
     this.particlesPoints = null;
 
@@ -26,18 +28,18 @@ export class BackgroundScene {
   init() {
     // Renderer setup
     this.renderer.setSize(window.innerWidth, window.innerHeight);
-    this.renderer.setPixelRatio(window.devicePixelRatio);
-    this.renderer.setClearColor(0x0a0e27, 1);
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.renderer.setClearColor(0x060912, 1);
     this.container.appendChild(this.renderer.domElement);
 
     // Camera
-    this.camera.position.z = 40;
+    this.camera.position.z = 60;
 
-    // Background shapes
-    this.createBackgroundLayer();
+    // Neural Network Visualization
+    this.neuralNetwork = new NeuralNetworkVisualization(this.scene, this.camera);
 
-    // Particles
-    this.particleSystem = new ParticleSystem(1000);
+    // Subtle particles background
+    this.particleSystem = new ParticleSystem(300);
     this.createParticleLayer();
 
     // Post-processing (Bloom)
@@ -70,13 +72,13 @@ export class BackgroundScene {
   }
 
   createParticleLayer() {
-    const geometry = createParticleGeometry(1000);
+    const geometry = createParticleGeometry(300);
     const material = new THREE.PointsMaterial({
-      size: 0.5,
+      size: 0.55,
       vertexColors: true,
       sizeAttenuation: true,
       transparent: true,
-      opacity: 0.8
+      opacity: 0.18,
     });
 
     this.particlesPoints = new THREE.Points(geometry, material);
@@ -90,9 +92,9 @@ export class BackgroundScene {
 
     const bloomPass = new UnrealBloomPass(
       new THREE.Vector2(window.innerWidth, window.innerHeight),
-      1.5,  // strength
-      0.4,  // radius
-      0.85  // threshold
+      0.95, // strength — reduced so it doesn't bleed into page content
+      0.65, // radius — wider but softer
+      0.78  // threshold — slightly lower so more elements catch glow
     );
     this.composer.addPass(bloomPass);
   }
@@ -128,19 +130,16 @@ export class BackgroundScene {
 
     this.time += 1;
 
-    // Update background shapes
-    this.scene.children.forEach(child => {
-      if (child.userData.rotationSpeed) {
-        child.rotation.x += child.userData.rotationSpeed;
-        child.rotation.y += child.userData.rotationSpeed;
-      }
-    });
+    // Update neural network with scroll + mouse
+    if (this.neuralNetwork) {
+      this.neuralNetwork.update(this.scroll, this.mouse.x, this.mouse.y, this.time);
+    }
 
-    // Update camera with scroll parallax
-    this.camera.position.y = -(this.scroll * 0.01);
-    this.camera.position.x = this.mouse.x * 5;
+    // Camera: gentle parallax — slower scroll drift so network stays visible longer
+    this.camera.position.y = -(this.scroll * 0.003);
+    this.camera.position.x = this.mouse.x * 2;
 
-    // Update particles
+    // Update particles (simplified - just keep them drifting)
     this.particleSystem.update(this.scroll, this.mouse.x, this.mouse.y, this.time);
 
     // Update particle positions in geometry
@@ -154,6 +153,9 @@ export class BackgroundScene {
   }
 
   dispose() {
+    if (this.neuralNetwork) {
+      this.neuralNetwork.dispose();
+    }
     this.renderer.dispose();
     this.composer.dispose();
     if (this.container.contains(this.renderer.domElement)) {

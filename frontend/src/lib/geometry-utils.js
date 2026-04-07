@@ -33,9 +33,9 @@ export function createParticleGeometry(count = 1000) {
   const colors = new Float32Array(count * 3);
 
   const colorOptions = [
-    new THREE.Color(0x00ffff),      // Cyan
-    new THREE.Color(0xb700ff),      // Electric purple
-    new THREE.Color(0xff00ff)       // Magenta
+    new THREE.Color(0x00E5FF), // Cyan — matches design accent
+    new THREE.Color(0x0066CC), // Deep blue
+    new THREE.Color(0x0044AA), // Navy blue
   ];
 
   for (let i = 0; i < count; i++) {
