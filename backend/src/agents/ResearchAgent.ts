@@ -1,5 +1,4 @@
-import { OllamaService, type OllamaOptions } from '../services/OllamaService.js';
-import { GeminiService } from '../services/GeminiService.js';
+import type { AIService } from '../services/AIService.js';
 import { MessageBus } from '../services/MessageBus.js';
 import type { ConversationMessage } from '../models/types.js';
 import { BaseAgent } from './BaseAgent.js';
@@ -22,18 +21,73 @@ export interface ResearchOutput {
 }
 
 export class ResearchAgent extends BaseAgent {
-  private generationService: OllamaService | GeminiService;
+  private generationService: AIService;
   private conversationHistory: ConversationMessage[] = [];
 
   private readonly systemPrompt = `You are a Senior Technical Architect researching project requirements.
 
 Your role is to:
-1. Analyze the project description and requirements
+1. Analyze the project description and detect the app type
 2. Classify the project type (web/fullstack/api/mobile)
 3. Recommend the best tech stack
 4. Identify appropriate architecture patterns
-5. Extract and list functional and non-functional requirements
+5. Extract SPECIFIC functional and non-functional requirements based on app type
 6. Define clear success criteria
+
+## CRITICAL: Extract SPECIFIC features for each app type:
+
+### CALCULATOR apps MUST include these functional requirements:
+- Display element showing current calculation result
+- Number buttons (0-9 digits)
+- Basic operation buttons (+, -, *, /)
+- Advanced operation buttons (=, clear, decimal point, backspace/delete)
+- Keyboard input support for faster entry
+- Error handling for invalid operations
+- Optional: Memory functions, scientific operations, history
+
+### TODO/TASK LIST apps MUST include:
+- Input field to create new items
+- Add/Create button with input validation
+- Display of all items in a list
+- Delete functionality for individual items
+- Mark complete/incomplete toggle for each item
+- Clear all completed functionality
+- Filter view (show all, show active only, show completed only)
+- Persistent storage using localStorage
+- Optional: Edit inline, priorities, due dates, categories
+
+### E-COMMERCE apps MUST include:
+- Product listing/catalog with images, titles, prices
+- Product detail view with full description
+- Add to cart functionality from product listings
+- Shopping cart view/modal showing all items
+- Cart item quantity controls (increase/decrease)
+- Remove item from cart functionality
+- Cart total price calculation
+- Checkout button/flow (can be mock/Stripe)
+- Product search functionality
+- Product filtering/categories/navigation
+- Stock/availability display
+
+### WEATHER apps MUST include:
+- Location search input field
+- Search button to fetch weather
+- Current weather display (temperature, conditions, icon)
+- Weather forecast display (3-7 day forecast)
+- Loading state indicator during API calls
+- Error handling for invalid locations
+- Weather icons/images for conditions
+- Additional metrics (humidity, wind speed, pressure)
+- Optional: Geolocation, hourly forecast, weather alerts
+
+### DASHBOARD/ANALYTICS apps MUST include:
+- Data visualization with charts/graphs
+- Key metrics display (KPIs)
+- Filter/date range selection controls
+- Data export functionality (CSV/PDF)
+- Real-time or periodic data updates
+- Loading states for data fetching
+- Error handling for failed data loads
 
 Be thorough and professional. Consider scalability, maintainability, and best practices.
 
@@ -48,17 +102,17 @@ Format your response as structured JSON with this exact format:
   },
   "architecturePatterns": ["Pattern1", "Pattern2"],
   "requirements": {
-    "functional": ["Requirement 1", "Requirement 2", "Requirement 3"],
-    "nonFunctional": ["Requirement 1", "Requirement 2"]
+    "functional": ["Requirement 1 with specific details", "Requirement 2 with specific details", "Requirement 3 with specific details"],
+    "nonFunctional": ["Performance requirement", "Security requirement"]
   },
-  "successCriteria": ["Criteria 1", "Criteria 2", "Criteria 3"],
+  "successCriteria": ["Criteria 1 - specific and measurable", "Criteria 2 - specific and measurable", "Criteria 3 - specific and measurable"],
   "summary": "Brief executive summary of the project"
 }`;
 
   constructor(
     agentId: string,
     messageBus: MessageBus,
-    service: OllamaService | GeminiService
+    service: AIService
   ) {
     super(
       {

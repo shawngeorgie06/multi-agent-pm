@@ -1,17 +1,17 @@
-import { OllamaService, type OllamaOptions } from '../services/OllamaService.js';
-import { GeminiService } from '../services/GeminiService.js';
+import type { AIService } from '../services/AIService.js';
 import { MessageBus } from '../services/MessageBus.js';
 import type { DesignBrief } from './DesignDirectorAgent.js';
-import { detectTemplate } from '../templates/utils.js';
+import type { ResearchOutput } from './ResearchAgent.js';
+import { CodeValidationService } from '../services/CodeValidationService.js';
 import { BaseAgent } from './BaseAgent.js';
 
 export class LogicAgent extends BaseAgent {
-  private generationService: OllamaService | GeminiService;
+  private generationService: AIService;
 
   constructor(
     agentId: string,
     messageBus: MessageBus,
-    service: OllamaService | GeminiService
+    service: AIService
   ) {
     super(
       {
@@ -34,11 +34,12 @@ export class LogicAgent extends BaseAgent {
     htmlStructure: string,
     taskContext?: string
   ): Promise<string> {
-    // Try to detect a matching template from the registry
-    const template = detectTemplate(projectDescription);
-    if (template) {
-      return template.js;
-    }
+    // DISABLED: Template detection was matching wrong templates
+    // Always generate custom JavaScript based on actual HTML structure instead
+    // const template = detectTemplate(projectDescription);
+    // if (template) {
+    //   return template.js;
+    // }
 
     // Extract element IDs from HTML for reference
     const elementIds = this.extractElementIds(htmlStructure);
@@ -111,6 +112,98 @@ MANDATORY:
   private extractCode(response: string): string {
     const match = response.match(/\`\`\`[\w]*\n([\s\S]*?)\n\`\`\`/);
     return match ? match[1].trim() : response.trim();
+  }
+
+  /**
+   * Direct code generation method (called from AgentOrchestrator)
+   */
+  async generateCode(
+    projectDescription: string,
+    research: ResearchOutput,
+    context: any = {},
+    callback?: (message: string) => void
+  ): Promise<string> {
+    if (callback) callback('Generating JavaScript logic…');
+
+    const designBrief: DesignBrief = context.designBrief || {
+      aesthetic: 'modern',
+      typography: 'system fonts',
+      colorPalette: '#ffffff background, #000000 text',
+      motionAndEffects: 'smooth transitions',
+      designTokens: '{}',
+      raw: ''
+    };
+
+    const htmlStructure = context.layoutHTML || '';
+
+    const logic = await this.generateLogic(
+      projectDescription,
+      designBrief,
+      htmlStructure,
+      `Functional requirements: ${(context.requirements || []).join(', ')}`
+    );
+
+    if (callback) callback('JavaScript logic complete');
+
+    return logic;
+  }
+
+  /**
+   * Validate JavaScript compatibility with HTML
+   */
+  protected async validateOutput(
+    generatedCode: string,
+    task: any,
+    context: any
+  ): Promise<{ isValid: boolean; errors: string[]; warnings: string[] }> {
+    // Gracefully handle validation - return valid if no HTML structure available
+    const htmlStructure = context?.layoutHTML || '';
+    if (!htmlStructure) {
+      return {
+        isValid: true,
+        errors: [],
+        warnings: ['No HTML structure available for validation (autonomous execution)']
+      };
+    }
+    return CodeValidationService.validateLogicCompatibility(htmlStructure, generatedCode);
+  }
+
+  /**
+   * Retry with feedback about missing element references
+   */
+  protected async retryWithFeedback(
+    task: any,
+    context: any,
+    errors: string[]
+  ): Promise<any> {
+    console.log('[LogicAgent] Retrying with feedback about element references');
+
+    const designBrief: DesignBrief = task.designBrief || {
+      aesthetic: 'modern',
+      typography: 'system fonts',
+      colorPalette: '#ffffff background, #000000 text',
+      motionAndEffects: 'smooth transitions',
+      designTokens: '{}',
+      raw: ''
+    };
+
+    const htmlStructure = context?.layoutHTML || '';
+
+    const errorFeedback = `Previous JavaScript had element reference issues. Make sure you only reference elements that exist in the HTML. Issues: ${errors.slice(0, 3).join(', ')}`;
+
+    const logic = await this.generateLogic(
+      task.description || 'Logic',
+      designBrief,
+      htmlStructure,
+      `${task.context || ''}\n\nIMPORTANT FEEDBACK: ${errorFeedback}`
+    );
+
+    return {
+      success: true,
+      generatedCode: logic,
+      language: 'javascript',
+      type: 'logic'
+    };
   }
 
   /**

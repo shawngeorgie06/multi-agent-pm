@@ -1,12 +1,11 @@
-import { OllamaService, type OllamaOptions } from '../services/OllamaService.js';
-import { GeminiService } from '../services/GeminiService.js';
+import type { AIService } from '../services/AIService.js';
 import { MessageBus } from '../services/MessageBus.js';
 import type { ConversationMessage } from '../models/types.js';
 import type { ResearchOutput } from './ResearchAgent.js';
 import { BaseAgent } from './BaseAgent.js';
 
 export class FrontendAgent extends BaseAgent {
-  private generationService: OllamaService | GeminiService;
+  private generationService: AIService;
   private conversationHistory: ConversationMessage[] = [];
 
   private readonly systemPrompt = `You are an Expert Frontend Developer. Generate COMPLETE, WORKING, PROFESSIONAL HTML5 applications.
@@ -173,7 +172,7 @@ NO markdown, NO code blocks, NO explanations.`;
   constructor(
     agentId: string,
     messageBus: MessageBus,
-    service: OllamaService | GeminiService
+    service: AIService
   ) {
     super(
       {

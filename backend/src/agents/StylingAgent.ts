@@ -1,17 +1,17 @@
-import { OllamaService, type OllamaOptions } from '../services/OllamaService.js';
-import { GeminiService } from '../services/GeminiService.js';
+import type { AIService } from '../services/AIService.js';
 import { MessageBus } from '../services/MessageBus.js';
-import { detectTemplate } from '../templates/utils.js';
 import type { DesignBrief } from './DesignDirectorAgent.js';
+import type { ResearchOutput } from './ResearchAgent.js';
+import { CodeValidationService } from '../services/CodeValidationService.js';
 import { BaseAgent } from './BaseAgent.js';
 
 export class StylingAgent extends BaseAgent {
-  private generationService: OllamaService | GeminiService;
+  private generationService: AIService;
 
   constructor(
     agentId: string,
     messageBus: MessageBus,
-    service: OllamaService | GeminiService
+    service: AIService
   ) {
     super(
       {
@@ -34,11 +34,12 @@ export class StylingAgent extends BaseAgent {
     htmlStructure: string,
     taskContext?: string
   ): Promise<string> {
-    // Try to detect template from project description
-    const template = detectTemplate(projectDescription);
-    if (template) {
-      return template.css;
-    }
+    // DISABLED: Template detection was matching wrong templates (e.g. color-picker CSS for calculators)
+    // Always generate custom CSS based on actual HTML structure instead
+    // const template = detectTemplate(projectDescription);
+    // if (template) {
+    //   return template.css;
+    // }
 
     // Extract IDs and classes from HTML for strict targeting
     const elementIds = this.extractElementIds(htmlStructure);
@@ -118,6 +119,98 @@ IMPORTANT:
       match.replace(/class="|"/g, '').split(' ')
     );
     return [...new Set(allClasses)]; // Remove duplicates
+  }
+
+  /**
+   * Direct code generation method (called from AgentOrchestrator)
+   */
+  async generateCode(
+    projectDescription: string,
+    research: ResearchOutput,
+    context: any = {},
+    callback?: (message: string) => void
+  ): Promise<string> {
+    if (callback) callback('Generating CSS styling…');
+
+    const designBrief: DesignBrief = context.designBrief || {
+      aesthetic: 'modern',
+      typography: 'system fonts',
+      colorPalette: '#ffffff background, #000000 text',
+      motionAndEffects: 'smooth transitions',
+      designTokens: '{}',
+      raw: ''
+    };
+
+    const htmlStructure = context.layoutHTML || '';
+
+    const styles = await this.generateStyles(
+      projectDescription,
+      designBrief,
+      htmlStructure,
+      `Functional requirements: ${(context.requirements || []).join(', ')}`
+    );
+
+    if (callback) callback('CSS styling complete');
+
+    return styles;
+  }
+
+  /**
+   * Validate CSS compatibility with HTML
+   */
+  protected async validateOutput(
+    generatedCode: string,
+    task: any,
+    context: any
+  ): Promise<{ isValid: boolean; errors: string[]; warnings: string[] }> {
+    // Gracefully handle validation - return valid if no HTML structure available
+    const htmlStructure = context?.layoutHTML || '';
+    if (!htmlStructure) {
+      return {
+        isValid: true,
+        errors: [],
+        warnings: ['No HTML structure available for validation (autonomous execution)']
+      };
+    }
+    return CodeValidationService.validateStylingCompatibility(htmlStructure, generatedCode);
+  }
+
+  /**
+   * Retry with feedback about orphaned selectors
+   */
+  protected async retryWithFeedback(
+    task: any,
+    context: any,
+    errors: string[]
+  ): Promise<any> {
+    console.log('[StylingAgent] Retrying with feedback about CSS selectors');
+
+    const designBrief: DesignBrief = task.designBrief || {
+      aesthetic: 'modern',
+      typography: 'system fonts',
+      colorPalette: '#ffffff background, #000000 text',
+      motionAndEffects: 'smooth transitions',
+      designTokens: '{}',
+      raw: ''
+    };
+
+    const htmlStructure = context?.layoutHTML || '';
+
+    const errorFeedback = `Previous CSS had issues. Make sure CSS only targets elements that exist in the HTML. Issues found: ${errors.slice(0, 3).join(', ')}`;
+
+    const styles = await this.generateStyles(
+      task.description || 'Styling',
+      designBrief,
+      htmlStructure,
+      `${task.context || ''}\n\nIMPORTANT FEEDBACK: ${errorFeedback}`
+    );
+
+    return {
+      success: true,
+      generatedCode: styles,
+      language: 'css',
+      type: 'styling'
+    };
   }
 
   /**

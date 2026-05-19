@@ -13,12 +13,11 @@ import { SocketServer } from '../websocket/SocketServer.js';
 import { MessageBus } from '../services/MessageBus.js';
 import { TaskDistributionService } from '../services/TaskDistributionService.js';
 import { TaskQueueManager } from '../services/TaskQueueManager.js';
-import prisma from '../database/db.js';
+import { CodeValidationService } from '../services/CodeValidationService.js';
 import { MessageParser } from '../services/MessageParser.js';
+import prisma from '../database/db.js';
 import { ParallelExecutionEngine } from '../services/ParallelExecutionEngine.js';
-import type { OllamaOptions } from '../services/OllamaService.js';
-import { OllamaService } from '../services/OllamaService.js';
-import { GeminiService } from '../services/GeminiService.js';
+import type { AIService } from '../services/AIService.js';
 
 export interface ProjectContext {
   projectId?: string;
@@ -55,12 +54,12 @@ export class AgentOrchestrator {
   private taskQueueManager?: TaskQueueManager;
   private taskDistributionService?: TaskDistributionService;
   private parallelExecutionEngine?: ParallelExecutionEngine;
-  private generationService: OllamaService | GeminiService;
+  public generationService: AIService;
   private executingAgents: Set<string> = new Set();
 
   constructor(
     maxRounds: number = 2,
-    generationService: OllamaService | GeminiService,
+    generationService: AIService,
     socketServer?: SocketServer,
     projectId?: string,
     messageBus?: MessageBus
@@ -598,24 +597,34 @@ export class AgentOrchestrator {
       const generatedCode: { frontend?: string; backend?: string } = {};
 
       if (researchOutput.projectType === 'web') {
-        // Frontend only
+        // Frontend only - use specialized agents (Layout → Styling → Logic)
         if (this.socketServer && this.context.projectId) {
-          this.socketServer.emitAgentActivity(this.context.projectId, 'FRONTEND', 'Generating frontend code…');
+          this.socketServer.emitAgentActivity(this.context.projectId, 'FRONTEND', 'Generating frontend code with specialized agents…');
         }
 
-        generatedCode.frontend = await this.frontendAgent.generateCode(
-          this.context.initialRequest,
-          researchOutput,
-          this.context.designBrief?.raw,
-          (msg) => {
-            if (this.socketServer && this.context.projectId) {
-              this.socketServer.emitAgentActivity(this.context.projectId, 'FRONTEND', msg);
-            }
-          }
-        );
+        try {
+          generatedCode.frontend = await this.executeSpecializedAgentWorkflow(
+            researchOutput,
+            this.context.designBrief
+          );
 
-        if (this.socketServer && this.context.projectId) {
-          this.socketServer.emitAgentActivity(this.context.projectId, 'FRONTEND', `Frontend complete: ${generatedCode.frontend?.length || 0} bytes of code`);
+          if (this.socketServer && this.context.projectId) {
+            this.socketServer.emitAgentActivity(this.context.projectId, 'FRONTEND', `Frontend complete: ${generatedCode.frontend?.length || 0} bytes of code`);
+          }
+        } catch (error) {
+          console.error('Error in specialized agent workflow:', error);
+          // Fallback to FrontendAgent if specialized workflow fails
+          console.log('Falling back to FrontendAgent...');
+          generatedCode.frontend = await this.frontendAgent.generateCode(
+            this.context.initialRequest,
+            researchOutput,
+            this.context.designBrief?.raw,
+            (msg) => {
+              if (this.socketServer && this.context.projectId) {
+                this.socketServer.emitAgentActivity(this.context.projectId, 'FRONTEND', msg);
+              }
+            }
+          );
         }
       } else if (researchOutput.projectType === 'fullstack') {
         // Frontend + Backend parallel
@@ -719,6 +728,365 @@ export class AgentOrchestrator {
         );
       }
     }
+  }
+
+  /**
+   * Build Layout HTML generation prompt
+   */
+  private buildLayoutPrompt(
+    projectRequest: string,
+    research: ResearchOutput,
+    designBrief?: DesignBrief
+  ): string {
+    const requirements = (research.requirements?.functional || []).join('\n- ');
+    return `You are an expert HTML/UI developer. Generate COMPLETE, production-ready HTML5 code for this project.
+
+PROJECT: ${projectRequest}
+
+REQUIREMENTS:
+- ${requirements}
+
+DESIGN STYLE: ${designBrief?.aesthetic || 'modern'}
+COLOR PALETTE: ${designBrief?.colorPalette || 'professional'}
+
+CRITICAL REQUIREMENTS:
+1. Generate ONLY valid HTML5 code - no CSS, no JavaScript
+2. Use semantic HTML5 tags (header, nav, main, section, article, footer, etc.)
+3. Add UNIQUE, DESCRIPTIVE id and class names to EVERY interactive element
+4. Example IDs: id="calculator-display", id="number-7", id="add-button" (NOT id="div1", id="btn")
+5. Include ALL required elements - nothing should be missing or stubbed out
+6. Use proper form elements for user input (input, button, textarea, select, etc.)
+7. Structure must support the requirements completely
+8. Return ONLY the HTML code wrapped in <html> tags - no explanations
+
+Generate the complete HTML now:`;
+  }
+
+  /**
+   * Build Styling CSS generation prompt
+   */
+  private buildStylingPrompt(
+    projectRequest: string,
+    research: ResearchOutput,
+    designBrief: DesignBrief | undefined,
+    layoutHTML: string
+  ): string {
+    return `You are an expert CSS/UI designer. Generate COMPLETE, production-ready CSS code to style this HTML.
+
+PROJECT: ${projectRequest}
+
+HTML STRUCTURE PROVIDED:
+\`\`\`html
+${layoutHTML.substring(0, 1500)}...
+\`\`\`
+
+DESIGN BRIEF:
+- Aesthetic: ${designBrief?.aesthetic || 'modern'}
+- Typography: ${designBrief?.typography || 'system fonts'}
+- Color Palette: ${designBrief?.colorPalette || 'professional with accent colors'}
+- Motion: ${designBrief?.motionAndEffects || 'smooth transitions'}
+
+CRITICAL REQUIREMENTS:
+1. Generate ONLY CSS code - no HTML, no JavaScript
+2. Style ALL elements with descriptive IDs and classes from the HTML
+3. Make it responsive (mobile, tablet, desktop)
+4. Include hover, focus, and active states for interactive elements
+5. Use modern CSS (flexbox, grid, custom properties)
+6. Ensure high contrast and good readability
+7. Add visual feedback for user interactions
+8. Return ONLY the CSS code without <style> tags - no explanations
+
+Generate the complete CSS styling now:`;
+  }
+
+  /**
+   * Build Logic JavaScript generation prompt
+   */
+  private buildLogicPrompt(
+    projectRequest: string,
+    research: ResearchOutput,
+    designBrief: DesignBrief | undefined,
+    layoutHTML: string,
+    styleCode: string
+  ): string {
+    const requirements = (research.requirements?.functional || []).join('\n- ');
+    return `You are an expert JavaScript developer. Generate COMPLETE, production-ready JavaScript code for this interactive application.
+
+PROJECT: ${projectRequest}
+
+REQUIREMENTS:
+- ${requirements}
+
+HTML ELEMENTS AVAILABLE (use these IDs/classes):
+${this.extractHTMLSelectors(layoutHTML)}
+
+CRITICAL REQUIREMENTS:
+1. Generate ONLY JavaScript code - no HTML, no CSS
+2. Reference ONLY the HTML IDs and classes that actually exist above
+3. Implement ALL functionality to meet the requirements completely
+4. Add proper error handling for invalid inputs
+5. Use localStorage for data persistence if applicable
+6. Initialize everything on page load
+7. No placeholder code, no TODOs, no "implement later" comments
+8. All event listeners must work for the actual HTML elements
+9. Functions must be fully implemented and tested
+10. Return ONLY the JavaScript code without <script> tags - no explanations
+
+Generate the complete JavaScript logic now:`;
+  }
+
+  /**
+   * Extract HTML selectors for JS context
+   */
+  private extractHTMLSelectors(html: string): string {
+    const idMatches = html.match(/id="([^"]+)"/g) || [];
+    const classMatches = html.match(/class="([^"]+)"/g) || [];
+
+    const ids = [...new Set(idMatches.map(m => m.replace(/id="|"/g, '')))];
+    const classes = [...new Set(classMatches.map(m => m.replace(/class="|"/g, '')))];
+
+    let selectors = 'IDs found:\n';
+    ids.forEach(id => selectors += `- id="${id}"\n`);
+    selectors += '\nClasses found:\n';
+    classes.forEach(cls => selectors += `- class="${cls}"\n`);
+
+    return selectors;
+  }
+
+  /**
+   * Execute specialized agent workflow (Layout → Styling → Logic)
+   * This creates tasks for each agent and coordinates them with dependencies
+   */
+  private async executeSpecializedAgentWorkflow(
+    research: ResearchOutput,
+    designBrief?: DesignBrief
+  ): Promise<string> {
+    console.log('[SPECIALIZED WORKFLOW] Starting Layout→Styling→Logic pipeline\n');
+
+    if (!this.context.projectId) {
+      throw new Error('Project ID required for specialized workflow');
+    }
+
+    try {
+      // Phase 1: Generate Layout HTML
+      console.log('[LAYOUT] Generating HTML structure…');
+      if (this.socketServer) {
+        this.socketServer.emitAgentActivity(this.context.projectId, 'LAYOUT', 'Generating HTML structure…');
+      }
+
+      const layoutPrompt = this.buildLayoutPrompt(
+        this.context.initialRequest,
+        research,
+        designBrief
+      );
+
+      const layoutCode = await this.generationService.generate(layoutPrompt);
+
+      if (this.socketServer) {
+        this.socketServer.emitAgentActivity(
+          this.context.projectId,
+          'LAYOUT',
+          `HTML structure complete: ${layoutCode.length} bytes`
+        );
+      }
+
+      console.log(`[LAYOUT] Complete: ${layoutCode.length} bytes\n`);
+
+      // Phase 2: Generate Styling CSS
+      console.log('[STYLING] Generating CSS styles…');
+      if (this.socketServer) {
+        this.socketServer.emitAgentActivity(this.context.projectId, 'STYLING', 'Generating CSS styling…');
+      }
+
+      const stylingPrompt = this.buildStylingPrompt(
+        this.context.initialRequest,
+        research,
+        designBrief,
+        layoutCode
+      );
+
+      const styleCode = await this.generationService.generate(stylingPrompt);
+
+      if (this.socketServer) {
+        this.socketServer.emitAgentActivity(
+          this.context.projectId,
+          'STYLING',
+          `CSS styling complete: ${styleCode.length} bytes`
+        );
+      }
+
+      console.log(`[STYLING] Complete: ${styleCode.length} bytes\n`);
+
+      // Phase 3: Generate Logic JavaScript
+      console.log('[LOGIC] Generating JavaScript logic…');
+      if (this.socketServer) {
+        this.socketServer.emitAgentActivity(this.context.projectId, 'LOGIC', 'Generating JavaScript logic…');
+      }
+
+      const logicPrompt = this.buildLogicPrompt(
+        this.context.initialRequest,
+        research,
+        designBrief,
+        layoutCode,
+        styleCode
+      );
+
+      const logicCode = await this.generationService.generate(logicPrompt);
+
+      if (this.socketServer) {
+        this.socketServer.emitAgentActivity(
+          this.context.projectId,
+          'LOGIC',
+          `JavaScript logic complete: ${logicCode.length} bytes`
+        );
+      }
+
+      console.log(`[LOGIC] Complete: ${logicCode.length} bytes\n`);
+
+      // Phase 4: Integration Validation
+      console.log('[INTEGRATION] Validating inter-agent compatibility…');
+      if (this.socketServer && this.context.projectId) {
+        this.socketServer.emitAgentActivity(this.context.projectId, 'INTEGRATION', 'Validating code integration…');
+      }
+
+      const integrationValidation = await this.validateIntegration(
+        layoutCode,
+        styleCode,
+        logicCode,
+        research.requirements.functional
+      );
+
+      if (!integrationValidation.isValid) {
+        console.warn('[INTEGRATION] Validation issues found:');
+        integrationValidation.errors.forEach(err => console.warn(`  - ${err}`));
+
+        if (this.socketServer && this.context.projectId) {
+          this.socketServer.emitAgentActivity(
+            this.context.projectId,
+            'INTEGRATION',
+            `Integration validation found ${integrationValidation.errors.length} issues: ${integrationValidation.errors.slice(0, 2).join(', ')}`
+          );
+        }
+
+        // Log warnings but don't fail (soft validation)
+        integrationValidation.warnings.forEach(warn => console.warn(`  ⚠️ ${warn}`));
+      } else {
+        if (this.socketServer && this.context.projectId) {
+          this.socketServer.emitAgentActivity(
+            this.context.projectId,
+            'INTEGRATION',
+            'Integration validation passed ✓'
+          );
+        }
+      }
+
+      // Phase 5: Assemble final HTML
+      console.log('[ASSEMBLY] Assembling final HTML…');
+      const finalHTML = this.assembleHTML(layoutCode, styleCode, logicCode);
+
+      console.log(`[ASSEMBLY] Complete: ${finalHTML.length} bytes\n`);
+      console.log('[SPECIALIZED WORKFLOW] Pipeline complete\n');
+
+      return finalHTML;
+    } catch (error) {
+      console.error('[SPECIALIZED WORKFLOW] Error:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Assemble HTML, CSS, and JavaScript into final HTML document
+   */
+  private assembleHTML(layoutHTML: string, styleCode: string, logicCode: string): string {
+    // Extract body content from layout HTML (remove DOCTYPE, html, head tags)
+    let bodyContent = layoutHTML;
+
+    // Remove DOCTYPE and html/head tags if present
+    bodyContent = bodyContent.replace(/<!DOCTYPE[^>]*>/gi, '');
+    bodyContent = bodyContent.replace(/<html[^>]*>/gi, '');
+    bodyContent = bodyContent.replace(/<head[^>]*>[\s\S]*?<\/head>/gi, '');
+    bodyContent = bodyContent.replace(/<body[^>]*>/gi, '');
+    bodyContent = bodyContent.replace(/<\/body>/gi, '');
+
+    // Ensure styles don't have outer style tags
+    let cleanedStyles = styleCode.trim();
+    if (cleanedStyles.startsWith('<style')) {
+      cleanedStyles = cleanedStyles.replace(/<style[^>]*>/gi, '').replace(/<\/style>/gi, '');
+    }
+
+    // Ensure scripts don't have outer script tags
+    let cleanedLogic = logicCode.trim();
+    if (cleanedLogic.startsWith('<script')) {
+      cleanedLogic = cleanedLogic.replace(/<script[^>]*>/gi, '').replace(/<\/script>/gi, '');
+    }
+
+    // Assemble final HTML
+    const finalHTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Generated Application</title>
+    <style>
+${cleanedStyles}
+    </style>
+</head>
+<body>
+${bodyContent}
+    <script>
+${cleanedLogic}
+    </script>
+</body>
+</html>`;
+
+    return finalHTML;
+  }
+
+  /**
+   * Validate integration between Layout, Styling, and Logic outputs
+   */
+  private async validateIntegration(
+    layoutHTML: string,
+    styleCode: string,
+    logicCode: string,
+    requirements: string[]
+  ): Promise<{ isValid: boolean; errors: string[]; warnings: string[] }> {
+    const errors: string[] = [];
+    const warnings: string[] = [];
+
+    console.log('[INTEGRATION] Running validation checks...');
+
+    // Check 1: Layout completeness
+    const layoutValidation = CodeValidationService.validateLayoutCompleteness(layoutHTML, requirements);
+    if (!layoutValidation.isValid) {
+      errors.push(...layoutValidation.errors);
+      console.warn('[INTEGRATION] Layout validation issues:', layoutValidation.errors);
+    }
+    warnings.push(...layoutValidation.warnings);
+
+    // Check 2: Styling compatibility
+    const stylingValidation = CodeValidationService.validateStylingCompatibility(layoutHTML, styleCode);
+    if (!stylingValidation.isValid) {
+      errors.push(...stylingValidation.errors);
+      console.warn('[INTEGRATION] Styling validation issues:', stylingValidation.errors);
+    }
+    warnings.push(...stylingValidation.warnings);
+
+    // Check 3: Logic compatibility
+    const logicValidation = CodeValidationService.validateLogicCompatibility(layoutHTML, logicCode);
+    if (!logicValidation.isValid) {
+      errors.push(...logicValidation.errors);
+      console.warn('[INTEGRATION] Logic validation issues:', logicValidation.errors);
+    }
+    warnings.push(...logicValidation.warnings);
+
+    console.log(`[INTEGRATION] Validation complete: ${errors.length} errors, ${warnings.length} warnings`);
+
+    return {
+      isValid: errors.length === 0,
+      errors,
+      warnings
+    };
   }
 
   /**

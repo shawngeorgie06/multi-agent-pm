@@ -1,17 +1,17 @@
-import { OllamaService, type OllamaOptions } from '../services/OllamaService.js';
-import { GeminiService } from '../services/GeminiService.js';
+import type { AIService } from '../services/AIService.js';
 import { MessageBus } from '../services/MessageBus.js';
 import type { DesignBrief } from './DesignDirectorAgent.js';
-import { detectTemplate } from '../templates/utils.js';
+import type { ResearchOutput } from './ResearchAgent.js';
+import { CodeValidationService } from '../services/CodeValidationService.js';
 import { BaseAgent } from './BaseAgent.js';
 
 export class LayoutAgent extends BaseAgent {
-  private generationService: OllamaService | GeminiService;
+  private generationService: AIService;
 
   constructor(
     agentId: string,
     messageBus: MessageBus,
-    service: OllamaService | GeminiService
+    service: AIService
   ) {
     super(
       {
@@ -33,13 +33,14 @@ export class LayoutAgent extends BaseAgent {
     designBrief: DesignBrief,
     taskContext?: string
   ): Promise<string> {
-    // Try to detect template from registry first
-    const template = detectTemplate(projectDescription);
-    if (template) {
-      return template.html;
-    }
+    // DISABLED: Template detection was matching wrong templates
+    // Always generate custom HTML based on project requirements instead
+    // const template = detectTemplate(projectDescription);
+    // if (template) {
+    //   return template.html;
+    // }
 
-    // Fall back to Ollama generation if no template matches
+    // Generate custom HTML based on project requirements
     const prompt = `You are a Layout Specialist. You create HTML structure with semantic markup and all required elements.
 
 ## Project Requirements
@@ -105,6 +106,98 @@ Examples:
   private extractCode(response: string): string {
     const match = response.match(/```[\w]*\n([\s\S]*?)\n```/);
     return match ? match[1].trim() : response.trim();
+  }
+
+  /**
+   * Direct code generation method (called from AgentOrchestrator)
+   */
+  async generateCode(
+    projectDescription: string,
+    research: ResearchOutput,
+    context: any = {},
+    callback?: (message: string) => void
+  ): Promise<string> {
+    if (callback) callback('Generating HTML structure…');
+
+    const designBrief: DesignBrief = context.designBrief || {
+      aesthetic: 'modern',
+      typography: 'system fonts',
+      colorPalette: '#ffffff background, #000000 text',
+      motionAndEffects: 'smooth transitions',
+      designTokens: '{}',
+      raw: ''
+    };
+
+    const layout = await this.generateLayout(
+      projectDescription,
+      designBrief,
+      `Functional requirements: ${(context.requirements || []).join(', ')}`
+    );
+
+    if (callback) callback('HTML structure complete');
+
+    return layout;
+  }
+
+  /**
+   * Validate HTML completeness
+   */
+  protected async validateOutput(
+    generatedCode: string,
+    task: any,
+    context: any
+  ): Promise<{ isValid: boolean; errors: string[]; warnings: string[] }> {
+    // Handle both cases: requirements already in array form, or nested in object
+    let requirements = context?.requirements;
+    if (requirements && typeof requirements === 'object' && !Array.isArray(requirements)) {
+      requirements = requirements.functional || [];
+    }
+
+    // If no requirements available (autonomous execution), skip detailed validation
+    if (!requirements || !Array.isArray(requirements) || requirements.length === 0) {
+      return {
+        isValid: true,
+        errors: [],
+        warnings: ['No requirements available for validation (autonomous execution)', 'Skipping detailed completeness checks']
+      };
+    }
+
+    return CodeValidationService.validateLayoutCompleteness(generatedCode, requirements);
+  }
+
+  /**
+   * Retry with feedback about missing elements
+   */
+  protected async retryWithFeedback(
+    task: any,
+    context: any,
+    errors: string[]
+  ): Promise<any> {
+    console.log('[LayoutAgent] Retrying with feedback about missing elements');
+
+    const designBrief: DesignBrief = task.designBrief || {
+      aesthetic: 'modern',
+      typography: 'system fonts',
+      colorPalette: '#ffffff background, #000000 text',
+      motionAndEffects: 'smooth transitions',
+      designTokens: '{}',
+      raw: ''
+    };
+
+    const errorFeedback = `Previous generation was incomplete. Missing elements: ${errors.join(', ')}. Ensure ALL required elements are included in the final HTML.`;
+
+    const layout = await this.generateLayout(
+      task.description || 'Layout',
+      designBrief,
+      `${task.context || ''}\n\nIMPORTANT FEEDBACK: ${errorFeedback}`
+    );
+
+    return {
+      success: true,
+      generatedCode: layout,
+      language: 'html',
+      type: 'layout'
+    };
   }
 
   /**

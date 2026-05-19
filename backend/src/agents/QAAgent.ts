@@ -1,5 +1,4 @@
-import { OllamaService, type OllamaOptions } from '../services/OllamaService.js';
-import { GeminiService } from '../services/GeminiService.js';
+import type { AIService } from '../services/AIService.js';
 import { MessageBus } from '../services/MessageBus.js';
 import type { ConversationMessage } from '../models/types.js';
 import type { ResearchOutput } from './ResearchAgent.js';
@@ -25,7 +24,7 @@ export interface QAReport {
 }
 
 export class QAAgent extends BaseAgent {
-  private generationService: OllamaService | GeminiService;
+  private generationService: AIService;
   private conversationHistory: ConversationMessage[] = [];
 
   private readonly systemPrompt = `You are an Expert QA Engineer reviewing generated code against requirements.
@@ -64,7 +63,7 @@ Be thorough but fair. Give PASS when code meets requirements, FAIL when it doesn
   constructor(
     agentId: string,
     messageBus: MessageBus,
-    service: OllamaService | GeminiService
+    service: AIService
   ) {
     super(
       {

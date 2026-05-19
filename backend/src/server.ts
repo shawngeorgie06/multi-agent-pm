@@ -1,15 +1,24 @@
+// Required for external APIs on networks with custom CA chains
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+
 import express, { Express, Request, Response } from 'express';
 import cors from 'cors';
 import { createServer } from 'http';
+import path from 'path';
+import fs from 'fs';
 import dotenv from 'dotenv';
+import { ProjectBuilderService, APPS_DIR } from './services/ProjectBuilderService.js';
 import { SocketServer } from './websocket/SocketServer.js';
 import { AgentOrchestrator } from './agents/AgentOrchestrator.js';
 import { MessageBus } from './services/MessageBus.js';
 import { PhaseOrchestrator } from './services/PhaseOrchestrator.js';
 import { TaskQueueManager } from './services/TaskQueueManager.js';
 import { TaskDistributionService } from './services/TaskDistributionService.js';
-import type { OllamaOptions } from './services/OllamaService.js';
+import type { AIService, RateLimitConfig } from './services/AIService.js';
 import { GeminiService } from './services/GeminiService.js';
+import { GitHubModelsService } from './services/GitHubModelsService.js';
+import { GroqService } from './services/GroqService.js';
+import { NvidiaService } from './services/NvidiaService.js';
 import { detectTemplate } from './templates/utils.js';
 import prisma from './database/db.js';
 
@@ -23,36 +32,109 @@ const messageBus = new MessageBus();
 
 const PORT = process.env.PORT || 5555;
 
-// Initialize Gemini API service
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-if (!GEMINI_API_KEY) {
-  console.error('[SERVER] GEMINI_API_KEY not found in environment variables');
-  process.exit(1);
+// Initialize AI Service (Gemini, GitHub Models, or Ollama)
+let currentAiService = process.env.AI_SERVICE?.toLowerCase() || 'gemini';
+let generationService: AIService;
+
+function createGenerationService(serviceType: string): AIService {
+  if (serviceType === 'github') {
+    const GITHUB_API_KEY = process.env.GITHUB_MODELS_API_KEY;
+    if (!GITHUB_API_KEY) throw new Error('GITHUB_MODELS_API_KEY not set');
+    const GITHUB_ENDPOINT = process.env.GITHUB_MODELS_ENDPOINT || 'https://models.inference.ai.azure.com';
+    const GITHUB_MODEL = process.env.GITHUB_MODELS_MODEL || 'gpt-4o';
+    const rl: Partial<RateLimitConfig> = {
+      minIntervalMs: parseInt(process.env.GITHUB_INTERVAL_MS ?? '500'),
+      maxRetries:    parseInt(process.env.GITHUB_MAX_RETRIES ?? '3'),
+    };
+    const svc = new GitHubModelsService(GITHUB_API_KEY, GITHUB_MODEL, GITHUB_ENDPOINT, { temperature: 0.7, maxTokens: 16384 }, rl);
+    console.log(`[SERVER] Using GitHub Models API (${GITHUB_MODEL}) for code generation`);
+    return svc;
+  } else if (serviceType === 'gemini') {
+    const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+    if (!GEMINI_API_KEY) throw new Error('GEMINI_API_KEY not set');
+    const rl: Partial<RateLimitConfig> = {
+      maxRequestsPerMinute: parseInt(process.env.GEMINI_RPM ?? '4'),
+      maxRequestsPerDay:    parseInt(process.env.GEMINI_RPD ?? '18'),
+      minIntervalMs:        parseInt(process.env.GEMINI_INTERVAL_MS ?? '15000'),
+      maxRetries:           parseInt(process.env.GEMINI_MAX_RETRIES ?? '5'),
+    };
+    const svc = new GeminiService(GEMINI_API_KEY, 'gemini-2.5-flash', { temperature: 0.7, maxOutputTokens: 20000, topP: 0.95, topK: 40 }, rl);
+    console.log('[SERVER] Using Gemini API (gemini-2.5-flash) for code generation');
+    return svc;
+  } else if (serviceType === 'groq') {
+    const GROQ_API_KEY = process.env.GROQ_API_KEY;
+    if (!GROQ_API_KEY) throw new Error('GROQ_API_KEY not set');
+    const GROQ_MODEL = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
+    const rl: Partial<RateLimitConfig> = {
+      minIntervalMs: parseInt(process.env.GROQ_INTERVAL_MS ?? '500'),
+      maxRetries:    parseInt(process.env.GROQ_MAX_RETRIES ?? '5'),
+    };
+    const svc = new GroqService(GROQ_API_KEY, GROQ_MODEL, { temperature: 0.7, maxTokens: 8192 }, rl);
+    console.log(`[SERVER] Using Groq Cloud (${GROQ_MODEL}) for code generation`);
+    return svc;
+  } else if (serviceType === 'nvidia') {
+    const NVIDIA_API_KEY = process.env.NVIDIA_API_KEY;
+    if (!NVIDIA_API_KEY) throw new Error('NVIDIA_API_KEY not set');
+    const NVIDIA_MODEL = process.env.NVIDIA_MODEL || 'nvidia/nemotron-3-super-120b-a12b';
+    const rl: Partial<RateLimitConfig> = {
+      minIntervalMs: parseInt(process.env.NVIDIA_INTERVAL_MS ?? '500'),
+      maxRetries:    parseInt(process.env.NVIDIA_MAX_RETRIES ?? '5'),
+    };
+    const svc = new NvidiaService(NVIDIA_API_KEY, NVIDIA_MODEL, { temperature: 1, maxTokens: 16384, topP: 0.95 }, rl);
+    console.log(`[SERVER] Using NVIDIA API (${NVIDIA_MODEL}) for code generation`);
+    return svc;
+  } else {
+    throw new Error(`Unknown AI_SERVICE: ${serviceType}. Must be 'gemini', 'github', 'groq', or 'nvidia'`);
+  }
 }
 
-const generationService = new GeminiService(
-  GEMINI_API_KEY,
-  'gemini-2.5-flash',  // Gemini 2.5 Flash (current stable model, fast & free)
-  {
-    temperature: 0.7,
-    maxOutputTokens: 20000,  // High limit for complete multi-task responses
-    topP: 0.95,
-    topK: 40
-  }
-);
-
-console.log('[SERVER] Using Gemini API (gemini-2.5-flash) for code generation');
+try {
+  generationService = createGenerationService(currentAiService);
+} catch (err) {
+  console.error('[SERVER] Failed to initialize AI service:', err);
+  process.exit(1);
+}
 
 // Middleware
 app.use(cors({ origin: '*' }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// Serve generated apps as static files
+app.use('/apps', express.static(APPS_DIR));
+
 // ============================================================================
 // Health check endpoint
 // ============================================================================
 app.get('/health', (_req: Request, res: Response) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+// ============================================================================
+// SETTINGS ENDPOINTS - AI provider switcher
+// ============================================================================
+app.get('/api/settings', (_req: Request, res: Response) => {
+  res.json({
+    aiService: currentAiService,
+    available: ['github', 'gemini', 'groq', 'nvidia'],
+  });
+});
+
+app.post('/api/settings', (req: Request, res: Response) => {
+  const { aiService } = req.body;
+  if (!aiService || !['github', 'gemini', 'groq', 'nvidia'].includes(aiService)) {
+    res.status(400).json({ error: "aiService must be 'github', 'gemini', 'groq', or 'nvidia'" });
+    return;
+  }
+  try {
+    const newService = createGenerationService(aiService);
+    generationService = newService;
+    currentAiService = aiService;
+    console.log(`[SERVER] Switched AI service to: ${aiService}`);
+    res.json({ aiService: currentAiService });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Quote API endpoint
@@ -165,8 +247,8 @@ app.get('/api/projects/:projectId/tasks/:taskId/preview', async (req: Request, r
       orderBy: { createdAt: 'asc' },
     });
 
-    // Combine separate HTML/CSS/JS tasks - ONLY use PM-001, PM-002, PM-003
-    // Ignore other tasks that may have generated code (like meta-discussion tasks)
+    // Combine separate HTML/CSS/JS tasks
+    // Support both old PM-001/002/003 and new LAYOUT/STYLING/LOGIC task IDs
     let htmlCode = '';
     let cssCode = '';
     let jsCode = '';
@@ -175,38 +257,61 @@ app.get('/api/projects/:projectId/tasks/:taskId/preview', async (req: Request, r
       if (task.generatedCode) {
         const code = task.generatedCode;
         const lower = code.toLowerCase();
+        const taskId = task.taskId.toUpperCase();
 
-        // Only use standard implementation tasks (PM-001, PM-002, PM-003)
-        const isStandardTask = task.taskId.startsWith('PM-001') ||
-                              task.taskId.startsWith('PM-002') ||
-                              task.taskId.startsWith('PM-003');
-
-        if (!isStandardTask) {
-          continue; // Skip non-standard tasks
+        // Skip meta-discussion or non-code tasks
+        if (code.length < 20) {
+          continue;
         }
 
-        // HTML task (PM-001) - must NOT contain CSS or JS markers
-        if ((lower.includes('<!doctype') || lower.includes('<html') || lower.includes('<body')) &&
-            !lower.includes('body {') && !lower.includes('function ') && !code.match(/^[\s]*[.#a-z]/m)) {
-          if (!htmlCode) { // Only use the first HTML found
-            htmlCode = code;
+        // Check if this is a code generation task
+        const isCodeTask = taskId.startsWith('PM-001') || taskId.startsWith('PM-002') || taskId.startsWith('PM-003') ||
+                          taskId.startsWith('LAYOUT') || taskId.startsWith('STYLING') || taskId.startsWith('LOGIC');
+
+        if (!isCodeTask) {
+          continue; // Skip non-code tasks
+        }
+
+        // Explicitly check task type first
+        if (taskId.startsWith('LAYOUT') || taskId.startsWith('PM-001')) {
+          // HTML task - must have HTML markers
+          if ((lower.includes('<!doctype') || lower.includes('<html') || lower.includes('<body')) &&
+              code.length > 50) {
+            if (!htmlCode) {
+              htmlCode = code;
+            }
           }
         }
-        // CSS task (PM-002) - must have CSS selectors or rules
-        else if ((code.match(/^[\s]*[.#a-z][\w-]*[\s]*\{/m) || // Starts with selector {
-                  code.match(/[\s]*[.#a-z][\w-]*[\s]*\{[\s\S]*?}/m) || // Contains selector { ... }
-                  (code.includes(':') && code.includes('{') && code.includes(';'))) &&
-                 !lower.includes('<!doctype') && !lower.includes('<html') && !lower.includes('<div')) {
-          if (!cssCode) { // Only use the first CSS found
-            cssCode = code;
+
+        if (taskId.startsWith('STYLING') || taskId.startsWith('PM-002')) {
+          // CSS task - must have CSS markers
+          if ((code.includes('{') && code.includes('}') && code.includes(':')) ||
+              code.match(/^[\s]*[.#a-z]/m)) {
+            if (!cssCode) {
+              cssCode = code;
+            }
           }
         }
-        // JS task (PM-003) - must have JS code markers
-        else if ((code.includes('const ') || code.includes('function ') || code.includes('let ') || code.includes('document.')) &&
-                 !lower.includes('<!doctype') && !lower.includes('<html')) {
-          if (!jsCode) { // Only use the first JS found
-            jsCode = code;
+
+        if (taskId.startsWith('LOGIC') || taskId.startsWith('PM-003')) {
+          // JS task - must have JS markers
+          if ((code.includes('function ') || code.includes('const ') || code.includes('let ') || code.includes('document.')) &&
+              !lower.includes('<!doctype') && !lower.includes('<html')) {
+            if (!jsCode) {
+              jsCode = code;
+            }
           }
+        }
+
+        // Fallback content-based detection if no type match
+        if (!htmlCode && (lower.includes('<!doctype') || lower.includes('<html'))) {
+          htmlCode = code;
+        }
+        if (!cssCode && (code.match(/^[\s]*[.#a-z][\w-]*[\s]*\{/m) || (code.includes('{') && code.includes('}') && code.includes(':') && !code.includes('function')))) {
+          cssCode = code;
+        }
+        if (!jsCode && (code.includes('function ') || code.includes('document.'))) {
+          jsCode = code;
         }
       }
     }
@@ -253,6 +358,32 @@ ${jsCode}
   } catch (error) {
     console.error('[SERVER] Error generating preview:', error);
     res.status(500).json({ error: 'Failed to generate preview' });
+  }
+});
+
+// ============================================================================
+// GET APP URL ENDPOINT
+// ============================================================================
+app.get('/api/projects/:id/app-url', async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const appUrl = `http://localhost:${PORT}/apps/${id}/index.html`;
+  res.json({ appUrl });
+});
+
+// ============================================================================
+// DELETE PROJECT ENDPOINT
+// ============================================================================
+app.delete('/api/projects/:id', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    await prisma.project.delete({ where: { id } });
+    const appDir = path.join(APPS_DIR, id);
+    if (fs.existsSync(appDir)) fs.rmSync(appDir, { recursive: true, force: true });
+    res.json({ success: true });
+  } catch (error: any) {
+    if (error.code === 'P2025') { res.status(404).json({ error: 'Project not found' }); return; }
+    console.error('[SERVER] Error deleting project:', error);
+    res.status(500).json({ error: 'Failed to delete project' });
   }
 });
 
@@ -316,6 +447,31 @@ app.post('/api/projects', async (req: Request, res: Response) => {
     console.log('\n[SERVER] Starting Phase 1: Orchestration');
     const phase1Output = await phaseOrchestrator.phase1Orchestration(userRequest, projectId);
 
+    // Build and serve the generated app immediately from Phase 1 output
+    const builder = ProjectBuilderService.getInstance();
+    const p1Tasks = phase1Output.tasks;
+    const htmlCode = p1Tasks.find((t: any) => t.taskId.startsWith('LAYOUT'))?.generatedCode || '';
+    const cssCode = p1Tasks.find((t: any) => t.taskId.startsWith('STYLING'))?.generatedCode || '';
+    const jsCode = p1Tasks.find((t: any) => t.taskId.startsWith('LOGIC'))?.generatedCode || '';
+    const backendTask = p1Tasks.find((t: any) => t.taskId.startsWith('BACKEND'));
+    const backendCode = backendTask?.generatedCode;
+    const backendPort = backendTask?.backendPort;
+
+    const { appUrl, backendUrl } = await builder.buildAndServe(
+      projectId, htmlCode, cssCode, jsCode, backendCode, backendPort
+    );
+
+    const fullAppUrl = `http://localhost:${PORT}${appUrl}`;
+    console.log(`\n[SERVER] ✅ App built and ready: ${fullAppUrl}`);
+    if (backendUrl) console.log(`[SERVER] ✅ Backend running: ${backendUrl}`);
+
+    socketServer.emitProjectStatus(
+      projectId,
+      'completed',
+      `App ready! Open: ${fullAppUrl}`
+    );
+    socketServer.emitToAll('app_ready', { projectId, appUrl: fullAppUrl, backendUrl });
+
     // Save design brief
     const designBrief = agentOrchestrator.getDesignBrief();
     if (designBrief) {
@@ -353,10 +509,10 @@ app.post('/api/projects', async (req: Request, res: Response) => {
     socketServer.emitTasksReady(projectId, phase2Output.queuedTaskCount);
 
     // ====================================================================
-    // PHASE 3: EXECUTION (Parallel agent execution)
+    // PHASE 3: REFINEMENT (Design Director → Logic → QA)
     // ====================================================================
-    console.log('\n[SERVER] Starting Phase 3: Execution');
-    await phaseOrchestrator.phase3Execution(phase2Output);
+    console.log('\n[SERVER] Starting Phase 3: Refinement');
+    await phaseOrchestrator.phase3Execution(phase2Output, userRequest, phase1Output.tasks);
 
     console.log('\n[SERVER] ✅ All phases complete - agents executing autonomously\n');
   } catch (error) {
@@ -367,12 +523,26 @@ app.post('/api/projects', async (req: Request, res: Response) => {
       `Workflow failed: ${error instanceof Error ? error.message : String(error)}`
     );
 
+    const errorMessage = error instanceof Error ? error.message : String(error);
     await prisma.project.update({
       where: { id: projectId },
-      data: { status: 'failed' },
+      data: {
+        status: 'failed',
+        errorMessage
+      },
     });
   }
 });
+
+// ============================================================================
+// Startup cleanup — reset orphaned in_progress projects from prior server runs
+// ============================================================================
+prisma.project.updateMany({
+  where: { status: 'in_progress' },
+  data: { status: 'failed' },
+}).then(({ count }) => {
+  if (count > 0) console.log(`[STARTUP] Reset ${count} orphaned in_progress project(s) → failed`);
+}).catch((e) => console.error('[STARTUP] Failed to reset orphaned projects:', e));
 
 // ============================================================================
 // Start server
@@ -382,7 +552,7 @@ httpServer.listen(PORT, () => {
   console.log(`🚀 MULTI-AGENT PM BACKEND`);
   console.log('='.repeat(60));
   console.log(`Server running on http://localhost:${PORT}`);
-  console.log(`AI Service: Gemini API (gemini-1.5-flash)`);
+  console.log(`AI Service: Gemini API (gemini-2.0-flash)`);
   console.log(`Connected clients: ${socketServer.getConnectedClientCount()}`);
   console.log(`${'='.repeat(60)}\n`);
 });

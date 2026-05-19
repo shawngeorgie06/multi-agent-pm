@@ -1,10 +1,9 @@
-import { OllamaService, type OllamaOptions } from '../services/OllamaService.js';
-import { GeminiService } from '../services/GeminiService.js';
+import type { AIService } from '../services/AIService.js';
 import { MessageParser } from '../services/MessageParser.js';
 import { ParsedMessage, ConversationMessage } from '../models/types.js';
 
 export class EngineerAgent {
-  private generationService: OllamaService | GeminiService;
+  private generationService: AIService;
   private conversationHistory: ConversationMessage[] = [];
 
   private readonly systemPrompt = `You're a software engineer chatting with a project manager. Write like you're actually talking—use contractions (I'm, we'll, that's), short sentences, casual tone. Like you're on Slack or in a standup.
@@ -28,7 +27,7 @@ Start your message with:
 
 Then just talk. Be helpful, not pedantic. Keep estimates realistic—don't add buffers. Keep it brief and conversational.`;
 
-  constructor(service: OllamaService | GeminiService) {
+  constructor(service: AIService) {
     this.generationService = service;
   }
 
@@ -162,10 +161,4 @@ Respond like a human. If they answered your questions and you're good, say so—
     this.conversationHistory = [];
   }
 
-  /**
-   * Set the model
-   */
-  setModel(model: string): void {
-    this.generationService.setModel(model);
-  }
 }

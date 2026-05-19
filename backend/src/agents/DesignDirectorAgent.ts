@@ -1,5 +1,4 @@
-import { OllamaService, type OllamaOptions } from '../services/OllamaService.js';
-import { GeminiService } from '../services/GeminiService.js';
+import type { AIService } from '../services/AIService.js';
 
 export interface DesignBrief {
   aesthetic: string;
@@ -11,9 +10,9 @@ export interface DesignBrief {
 }
 
 export class DesignDirectorAgent {
-  private generationService: OllamaService | GeminiService;
+  private generationService: AIService;
 
-  constructor(service: OllamaService | GeminiService) {
+  constructor(service: AIService) {
     this.generationService = service;
   }
 

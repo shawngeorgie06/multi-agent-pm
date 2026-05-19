@@ -1,10 +1,9 @@
-import { OllamaService, type OllamaOptions } from '../services/OllamaService.js';
-import { GeminiService } from '../services/GeminiService.js';
+import type { AIService } from '../services/AIService.js';
 import { MessageParser } from '../services/MessageParser.js';
 import { ParsedMessage, ConversationMessage } from '../models/types.js';
 
 export class ProjectManagerAgent {
-  private generationService: OllamaService | GeminiService;
+  private generationService: AIService;
   private conversationHistory: ConversationMessage[] = [];
 
   private readonly systemPrompt = `You're a project manager chatting with an engineer. Write like you're actually talking—use contractions (I'm, we'll, that's), short sentences, and a friendly tone. No corporate speak or stiff formality.
@@ -74,7 +73,7 @@ Priority: HIGH
 Dependencies: Subtask 1, Subtask 2
 Acceptance Criteria: Basic math operations work, display updates correctly, clearing works`;
 
-  constructor(service: OllamaService | GeminiService) {
+  constructor(service: AIService) {
     this.generationService = service;
   }
 
@@ -254,10 +253,4 @@ Then write your actual response naturally.`;
     this.conversationHistory = [];
   }
 
-  /**
-   * Set the model
-   */
-  setModel(model: string): void {
-    this.generationService.setModel(model);
-  }
 }
