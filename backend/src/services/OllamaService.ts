@@ -1,4 +1,5 @@
 import axios, { AxiosInstance } from 'axios';
+import { AIService, RateLimitConfig } from './AIService.js';
 import { OllamaStreamResponse } from '../models/types.js';
 
 /** Ollama options that affect speed. Smaller values = faster but less capable. */
@@ -8,7 +9,9 @@ export interface OllamaOptions {
   num_thread?: number;  // CPU threads (Ollama uses GPU if available).
 }
 
-export class OllamaService {
+export class OllamaService implements AIService {
+  readonly providerName = 'ollama';
+  get modelName(): string { return this.model; }
   private client: AxiosInstance;
   private model: string;
   private apiUrl: string;
@@ -17,7 +20,8 @@ export class OllamaService {
   constructor(
     apiUrl: string = 'http://localhost:11434',
     model: string = 'mistral',
-    options?: OllamaOptions
+    options?: OllamaOptions,
+    _rateLimitConfig?: Partial<RateLimitConfig>
   ) {
     this.apiUrl = apiUrl;
     this.model = model;
