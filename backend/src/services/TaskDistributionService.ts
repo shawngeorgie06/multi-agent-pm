@@ -10,6 +10,9 @@ import { MessageBus } from './MessageBus.js';
 import { TaskQueueManager } from './TaskQueueManager.js';
 import { SocketServer } from '../websocket/SocketServer.js';
 import prisma from '../database/db.js';
+import { decideTaskFailureOutcome, MAX_TASK_RETRIES } from './TaskRetryPolicy.js';
+import { staleClaimCutoff, CLAIM_STALE_TIMEOUT_MS } from './StaleClaimPolicy.js';
+import { isAgentUnresponsive, AGENT_HEARTBEAT_TIMEOUT_MS } from './AgentLivenessPolicy.js';
 
 export interface TaskQueueEntry {
   id: string;
@@ -33,6 +36,9 @@ export interface AgentAvailability {
   isBusy: boolean;
   currentTaskCount: number;
   maxConcurrentTasks: number;
+  // Last time this agent was seen alive (registration, heartbeat, or online).
+  // Used to detect dead agents and reclaim their in-flight tasks.
+  lastHeartbeat: Date;
 }
 
 export class TaskDistributionService {
@@ -41,6 +47,12 @@ export class TaskDistributionService {
 
   // Track task dependencies: taskId -> requiredTaskIds
   private taskDependencies: Map<string, string[]> = new Map();
+
+  // How long a claim may sit before it is treated as abandoned and reclaimed.
+  private claimStaleTimeoutMs: number = CLAIM_STALE_TIMEOUT_MS;
+
+  // How long an agent may go silent (no heartbeat) before it is treated as dead.
+  private agentHeartbeatTimeoutMs: number = AGENT_HEARTBEAT_TIMEOUT_MS;
 
   // Track distribution metrics
   private distributionMetrics = {
@@ -82,7 +94,8 @@ export class TaskDistributionService {
           isOnline: true,
           isBusy: false,
           currentTaskCount: 0,
-          maxConcurrentTasks: this.config.maxConcurrentTasksPerAgent
+          maxConcurrentTasks: this.config.maxConcurrentTasksPerAgent,
+          lastHeartbeat: new Date()
         });
       }
 
@@ -92,7 +105,11 @@ export class TaskDistributionService {
         if (agent) {
           agent.isOnline = true;
           agent.isBusy = message.state === 'busy';
+          agent.lastHeartbeat = new Date();
         }
+        // A live heartbeat is also our chance to notice that OTHER agents have
+        // gone silent — reclaim their in-flight tasks promptly.
+        await this.detectAndReclaimUnresponsiveAgents();
       }
 
       // When tasks are extracted from PM plan, distribute them
@@ -141,7 +158,7 @@ export class TaskDistributionService {
         }
       }
 
-      // When task fails, release it back to queue for retry
+      // When task fails, retry it (up to the cap) or mark it terminally FAILED
       else if (eventType === 'task:failed') {
         console.log(`[TaskDistribution] Task ${message.taskId} failed: ${message.error}`);
         try {
@@ -152,32 +169,57 @@ export class TaskDistributionService {
             agent.isBusy = agent.currentTaskCount > 0;
           }
 
-          // Release task (reset claimedBy and claimedAt)
-          await prisma.taskQueue.updateMany({
-            where: { taskId: message.taskId },
-            data: {
-              claimedBy: null,
-              claimedAt: null
-            }
-          });
-
-          // Update Task status
-          await prisma.task.update({
+          // Decide whether to retry or give up, based on how many times this
+          // task has already failed. This prevents a deterministically-failing
+          // task from looping forever (claim -> fail -> TODO -> claim -> ...).
+          const failingTask = await prisma.task.findUnique({
             where: { id: message.taskId },
-            data: {
-              status: 'TODO' // Reset to TODO for retry
-            }
+            select: { retryCount: true }
           });
+          const outcome = decideTaskFailureOutcome(failingTask?.retryCount ?? 0);
 
-          // Notify via WebSocket
-          if (this.socketServer && message.projectId) {
-            this.socketServer.emitTaskFailed(message.projectId, message.taskId, message.error);
+          if (outcome.action === 'retry') {
+            // Release the claim so another agent can pick it up, bump the count.
+            await prisma.taskQueue.updateMany({
+              where: { taskId: message.taskId },
+              data: { claimedBy: null, claimedAt: null }
+            });
+            await prisma.task.update({
+              where: { id: message.taskId },
+              data: { status: outcome.nextStatus, retryCount: outcome.nextRetryCount }
+            });
+
+            if (this.socketServer && message.projectId) {
+              this.socketServer.emitTaskFailed(message.projectId, message.taskId, message.error);
+            }
+
+            console.log(
+              `[TaskDistribution] Task ${message.taskId} requeued for retry ${outcome.nextRetryCount}/${MAX_TASK_RETRIES}`
+            );
+
+            // Re-distribute to other agents
+            await this.distributeQueuedTasksInParallel(message.projectId);
+          } else {
+            // Retry budget exhausted — dead-letter the task: remove it from the
+            // queue, mark it terminally FAILED, and record why.
+            await prisma.taskQueue.deleteMany({ where: { taskId: message.taskId } });
+            await prisma.task.update({
+              where: { id: message.taskId },
+              data: {
+                status: outcome.nextStatus,
+                retryCount: outcome.nextRetryCount,
+                blockerMessage: `Failed after ${outcome.nextRetryCount} retries: ${message.error ?? 'unknown error'}`
+              }
+            });
+
+            if (this.socketServer && message.projectId) {
+              this.socketServer.emitTaskFailed(message.projectId, message.taskId, message.error);
+            }
+
+            console.error(
+              `[TaskDistribution] Task ${message.taskId} dead-lettered after ${outcome.nextRetryCount} retries`
+            );
           }
-
-          console.log(`[TaskDistribution] Task ${message.taskId} released back to queue`);
-
-          // Re-distribute to other agents
-          await this.distributeQueuedTasksInParallel(message.projectId);
         } catch (error) {
           console.error(`[TaskDistribution] Error failing task ${message.taskId}:`, error);
         }
@@ -190,6 +232,7 @@ export class TaskDistributionService {
         if (agent) {
           agent.isOnline = true;
           agent.isBusy = false;
+          agent.lastHeartbeat = new Date();
         }
 
         // When an agent comes online, distribute all unclaimed tasks
@@ -215,37 +258,11 @@ export class TaskDistributionService {
       // When agent goes offline, reclaim their tasks
       else if (eventType === 'agent:offline') {
         console.log(`[TaskDistribution] Agent ${message.agentId} went offline`);
-        try {
-          const agent = this.agentAvailability.get(message.agentId);
-          if (agent) {
-            agent.isOnline = false;
-          }
-
-          const tasks = await prisma.taskQueue.findMany({
-            where: { claimedBy: message.agentId }
-          });
-
-          console.log(`[TaskDistribution] Reclaiming ${tasks.length} tasks from offline agent ${message.agentId}`);
-
-          // Release all tasks claimed by this agent
-          for (const task of tasks) {
-            await prisma.taskQueue.update({
-              where: { id: task.id },
-              data: {
-                claimedBy: null,
-                claimedAt: null
-              }
-            });
-          }
-
-          // Re-distribute unclaimed tasks
-          if (tasks.length > 0) {
-            const projectId = tasks[0].projectId;
-            await this.distributeQueuedTasksInParallel(projectId);
-          }
-        } catch (error) {
-          console.error(`[TaskDistribution] Error reclaiming tasks from offline agent:`, error);
+        const agent = this.agentAvailability.get(message.agentId);
+        if (agent) {
+          agent.isOnline = false;
         }
+        await this.reclaimTasksFromAgent(message.agentId);
       }
     });
   }
@@ -292,6 +309,10 @@ export class TaskDistributionService {
   async distributeQueuedTasksInParallel(projectId: string): Promise<void> {
     try {
       const startTime = Date.now();
+
+      // Recover tasks whose claiming agent crashed/hung without reporting back,
+      // so they re-enter the unclaimed set below instead of staying stuck.
+      await this.reclaimStaleClaims(projectId);
 
       // Get all unclaimed tasks for this project, sorted by priority
       const queuedTasks = await prisma.taskQueue.findMany({
@@ -751,6 +772,143 @@ export class TaskDistributionService {
   setDistributionBatchSize(size: number): void {
     this.config.batchSize = Math.max(1, size);
     console.log(`[TaskDistribution] Distribution batch size set to ${size}`);
+  }
+
+  /**
+   * Set how long a claim may sit before it is treated as abandoned. Must be
+   * longer than the slowest legitimate task to avoid reclaiming a task from a
+   * still-running agent (which would cause duplicate execution).
+   */
+  setClaimStaleTimeout(ms: number): void {
+    this.claimStaleTimeoutMs = Math.max(1000, ms);
+    console.log(`[TaskDistribution] Claim stale timeout set to ${this.claimStaleTimeoutMs}ms`);
+  }
+
+  /**
+   * Set how long an agent may go silent (no heartbeat) before it is treated as
+   * dead and its in-flight tasks reclaimed. Must comfortably exceed the agent
+   * heartbeat interval (5s) to tolerate a few missed beats.
+   */
+  setAgentHeartbeatTimeout(ms: number): void {
+    this.agentHeartbeatTimeoutMs = Math.max(1000, ms);
+    console.log(`[TaskDistribution] Agent heartbeat timeout set to ${this.agentHeartbeatTimeoutMs}ms`);
+  }
+
+  /**
+   * Find agents that have stopped sending heartbeats (crashed/hung without an
+   * agent:offline) and reclaim their in-flight tasks. This is the fast path for
+   * dead-agent recovery (~heartbeat timeout) complementing the slower
+   * claim-age backstop in {@link reclaimStaleClaims}.
+   */
+  private async detectAndReclaimUnresponsiveAgents(): Promise<void> {
+    const now = new Date();
+
+    for (const agent of this.getUnresponsiveAgents(now)) {
+      console.warn(
+        `[TaskDistribution] Agent ${agent.agentId} unresponsive (no heartbeat for ` +
+          `${now.getTime() - agent.lastHeartbeat.getTime()}ms) — marking offline and reclaiming tasks`
+      );
+      agent.isOnline = false;
+      agent.isBusy = false;
+      agent.currentTaskCount = 0;
+      await this.reclaimTasksFromAgent(agent.agentId);
+    }
+  }
+
+  /**
+   * Return the currently-online agents that have stopped sending heartbeats and
+   * are therefore presumed dead. Pure in-memory read (no DB) — the source of
+   * truth for which agents detection will reclaim from.
+   *
+   * @param now reference time (defaults to current time)
+   */
+  getUnresponsiveAgents(now: Date = new Date()): AgentAvailability[] {
+    return Array.from(this.agentAvailability.values()).filter(
+      (agent) =>
+        agent.isOnline &&
+        isAgentUnresponsive(agent.lastHeartbeat, now, this.agentHeartbeatTimeoutMs)
+    );
+  }
+
+  /**
+   * Release every queued task currently claimed by an agent and re-distribute
+   * them, so a departed/dead agent's work is picked up by someone else. Shared
+   * by the agent:offline handler and unresponsive-agent detection.
+   *
+   * @param agentId the agent whose claims should be released
+   * @returns the number of tasks reclaimed
+   */
+  private async reclaimTasksFromAgent(agentId: string): Promise<number> {
+    try {
+      const tasks = await prisma.taskQueue.findMany({
+        where: { claimedBy: agentId }
+      });
+
+      if (tasks.length === 0) return 0;
+
+      console.log(`[TaskDistribution] Reclaiming ${tasks.length} task(s) from agent ${agentId}`);
+
+      for (const task of tasks) {
+        await prisma.taskQueue.update({
+          where: { id: task.id },
+          data: { claimedBy: null, claimedAt: null }
+        });
+      }
+
+      // Re-distribute per affected project.
+      const projectIds = new Set(tasks.map((t: any) => t.projectId));
+      for (const projectId of projectIds) {
+        await this.distributeQueuedTasksInParallel(projectId);
+      }
+
+      return tasks.length;
+    } catch (error) {
+      console.error(`[TaskDistribution] Error reclaiming tasks from agent ${agentId}:`, error);
+      return 0;
+    }
+  }
+
+  /**
+   * Release tasks whose claiming agent appears to have crashed or hung — i.e.
+   * the claim is older than the stale timeout but the task never completed or
+   * failed. Reclaimed tasks have their claim cleared so the next distribution
+   * pass can hand them to another agent.
+   *
+   * @param projectId scope the sweep to a single project
+   * @returns the number of stale claims reclaimed
+   */
+  private async reclaimStaleClaims(projectId: string): Promise<number> {
+    try {
+      const cutoff = staleClaimCutoff(new Date(), this.claimStaleTimeoutMs);
+
+      const staleClaims = await prisma.taskQueue.findMany({
+        where: {
+          projectId,
+          claimedBy: { not: null },
+          claimedAt: { lt: cutoff }
+        }
+      });
+
+      if (staleClaims.length === 0) return 0;
+
+      for (const claim of staleClaims) {
+        await prisma.taskQueue.update({
+          where: { id: claim.id },
+          data: { claimedBy: null, claimedAt: null }
+        });
+        console.warn(
+          `[TaskDistribution] Reclaimed stale task ${claim.taskId} from agent ${claim.claimedBy} (claimed at ${claim.claimedAt?.toISOString()})`
+        );
+      }
+
+      console.log(
+        `[TaskDistribution] Reclaimed ${staleClaims.length} stale claim(s) for project ${projectId}`
+      );
+      return staleClaims.length;
+    } catch (error) {
+      console.error(`[TaskDistribution] Error reclaiming stale claims for project ${projectId}:`, error);
+      return 0;
+    }
   }
 
   /**

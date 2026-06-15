@@ -68,6 +68,7 @@ model Project {
   name            String
   description     String   @db.Text
   status          String   @default("in_progress") // 'in_progress', 'completed', 'failed'
+  errorMessage    String?  @db.Text // Error reason if status is 'failed' (e.g., quota exceeded)
   designBrief     String?  @db.Text
   researchOutput  String?  @db.Text // JSON string from ResearchAgent
   qaReport        String?  @db.Text // JSON string from QAAgent
@@ -105,6 +106,7 @@ model Task {
   taskId              String    // 'PM-001', 'PM-002', etc.
   description         String    @db.Text
   status              String    @default("TODO") // 'TODO', 'IN_PROGRESS', 'COMPLETE', 'BLOCKED', 'FAILED'
+  retryCount          Int       @default(0) // Times this task has been retried after failure (capped by TaskRetryPolicy)
   priority            String    @default("MEDIUM") // 'HIGH', 'MEDIUM', 'LOW'
   estimatedHours      Float?
   actualHours         Float?
