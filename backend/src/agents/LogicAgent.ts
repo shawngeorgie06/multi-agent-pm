@@ -4,6 +4,7 @@ import type { DesignBrief } from './DesignDirectorAgent.js';
 import type { ResearchOutput } from './ResearchAgent.js';
 import { CodeValidationService } from '../services/CodeValidationService.js';
 import { BaseAgent } from './BaseAgent.js';
+import { stripCodeFences } from '../utils/codeExtraction.js';
 
 export class LogicAgent extends BaseAgent {
   private generationService: AIService;
@@ -110,8 +111,7 @@ MANDATORY:
   }
 
   private extractCode(response: string): string {
-    const match = response.match(/\`\`\`[\w]*\n([\s\S]*?)\n\`\`\`/);
-    return match ? match[1].trim() : response.trim();
+    return stripCodeFences(response);
   }
 
   /**

@@ -1,4 +1,5 @@
 import { OllamaService, type OllamaOptions } from './OllamaService.js';
+import { stripCodeFences } from '../utils/codeExtraction.js';
 
 interface TaskInfo {
   taskId: string;
@@ -120,11 +121,7 @@ Generate the complete, working code now:`;
 
     const response = await this.ollamaService.generate(prompt);
 
-    // Extract code block if present
-    const codeBlockMatch = response.match(/```[\w]*\n([\s\S]*?)\n```/);
-    if (codeBlockMatch) {
-      return codeBlockMatch[1].trim();
-    }
-    return response.trim();
+    // Extract code, stripping any markdown fences from the model response.
+    return stripCodeFences(response);
   }
 }

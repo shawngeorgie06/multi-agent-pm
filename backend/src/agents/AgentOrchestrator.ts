@@ -18,6 +18,7 @@ import { MessageParser } from '../services/MessageParser.js';
 import prisma from '../database/db.js';
 import { ParallelExecutionEngine } from '../services/ParallelExecutionEngine.js';
 import type { AIService } from '../services/AIService.js';
+import { stripCodeFences } from '../utils/codeExtraction.js';
 
 export interface ProjectContext {
   projectId?: string;
@@ -998,6 +999,12 @@ Generate the complete JavaScript logic now:`;
    * Assemble HTML, CSS, and JavaScript into final HTML document
    */
   private assembleHTML(layoutHTML: string, styleCode: string, logicCode: string): string {
+    // Final safety net: strip any markdown fences that slipped through so a
+    // literal ```css / ```html can never end up inside the generated page.
+    layoutHTML = stripCodeFences(layoutHTML);
+    styleCode = stripCodeFences(styleCode);
+    logicCode = stripCodeFences(logicCode);
+
     // Extract body content from layout HTML (remove DOCTYPE, html, head tags)
     let bodyContent = layoutHTML;
 

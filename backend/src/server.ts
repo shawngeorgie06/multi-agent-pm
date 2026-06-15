@@ -14,6 +14,7 @@ import { MessageBus } from './services/MessageBus.js';
 import { PhaseOrchestrator } from './services/PhaseOrchestrator.js';
 import { TaskQueueManager } from './services/TaskQueueManager.js';
 import { TaskDistributionService } from './services/TaskDistributionService.js';
+import { stripCodeFences } from './utils/codeExtraction.js';
 import type { AIService, RateLimitConfig } from './services/AIService.js';
 import { GeminiService } from './services/GeminiService.js';
 import { GitHubModelsService } from './services/GitHubModelsService.js';
@@ -321,6 +322,12 @@ app.get('/api/projects/:projectId/tasks/:taskId/preview', async (req: Request, r
       res.status(404).json({ error: 'No HTML code generated yet' });
       return;
     }
+
+    // Strip any markdown fences before assembling so a literal ```css / ```html
+    // can never end up inside the generated preview page.
+    htmlCode = stripCodeFences(htmlCode);
+    cssCode = stripCodeFences(cssCode);
+    jsCode = stripCodeFences(jsCode);
 
     // Extract body content from HTML (remove DOCTYPE, html, head, and body tags)
     let bodyContent = htmlCode
