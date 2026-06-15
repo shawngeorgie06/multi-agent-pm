@@ -226,7 +226,7 @@ MANDATORY:
         task.description || 'Logic',
         designBrief,
         htmlStructure,
-        task.context
+        this.appendValidationFeedback(task.context, context)
       );
 
       this.emitProgress(task.id, '', 100, 'Logic generation complete');

@@ -214,7 +214,7 @@ Examples:
       const layout = await this.generateLayout(
         task.description || 'Layout',
         designBrief,
-        task.context
+        this.appendValidationFeedback(task.context, context)
       );
 
       this.emitProgress(task.id, '', 100, 'Layout generation complete');

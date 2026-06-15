@@ -11,6 +11,7 @@ import { MessageBus } from '../services/MessageBus.js';
 import { AgentClaimingHelper } from '../services/AgentClaimingHelper.js';
 import { CodeValidationService } from '../services/CodeValidationService.js';
 import prisma from '../database/db.js';
+import { shouldRegenerate, MAX_VALIDATION_REGENERATIONS } from './ValidationRetryPolicy.js';
 
 export enum AgentState {
   IDLE = 'IDLE',
@@ -222,30 +223,10 @@ export abstract class BaseAgent {
         logicJS: completedTasks.find(t => this.inferTaskType(t.description) === 'logic')?.generatedCode
       };
 
-      // Execute the task (implemented by subclasses) with context
+      // Execute the task (implemented by subclasses), self-correcting against
+      // validation failures by regenerating with the errors as feedback.
       const startTime = Date.now();
-      let result = await this.executeTask(task, taskContext);
-
-      // Validate generated code before marking complete (soft validation)
-      if (result?.generatedCode) {
-        try {
-          const validation = await this.validateOutput(result.generatedCode, task, taskContext);
-
-          if (!validation.isValid && validation.errors.length > 0) {
-            console.warn(`[${this.agentId}] Validation warnings for task ${taskId}. Issues: ${validation.errors.slice(0, 2).join(', ')}`);
-
-            // Log but don't fail - continue with the generated code
-            // This is a soft validation to guide future improvements
-          }
-
-          if (validation.warnings.length > 0) {
-            console.log(`[${this.agentId}] Validation notes: ${validation.warnings.slice(0, 2).join(', ')}`);
-          }
-        } catch (validationError) {
-          // If validation itself fails, just log and continue
-          console.warn(`[${this.agentId}] Validation error for task ${taskId}: ${validationError instanceof Error ? validationError.message : String(validationError)}`);
-        }
-      }
+      const result = await this.generateWithSelfCorrection(task, taskContext, taskId);
 
       const duration = Date.now() - startTime;
 
@@ -388,6 +369,63 @@ export abstract class BaseAgent {
   }
 
   /**
+   * Run the subclass task and, if its output fails validation, regenerate with
+   * the validation errors as feedback up to MAX_VALIDATION_REGENERATIONS times.
+   * Accepts the first valid result, or the attempt with the fewest errors.
+   *
+   * Soft by design: if the budget is exhausted it ships the best attempt rather
+   * than failing the task — but it no longer ships known-broken code blindly.
+   */
+  protected async generateWithSelfCorrection(task: any, context: any, taskId: string): Promise<any> {
+    let result = await this.executeTask(task, context);
+    if (!result?.generatedCode) return result;
+
+    try {
+      let validation = await this.validateOutput(result.generatedCode, task, context);
+      let regenerations = 0;
+
+      while (shouldRegenerate(validation, regenerations)) {
+        regenerations++;
+        console.warn(
+          `[${this.agentId}] Validation failed for task ${taskId} (${validation.errors.slice(0, 2).join('; ')}). ` +
+            `Regenerating with feedback (attempt ${regenerations}/${MAX_VALIDATION_REGENERATIONS})…`
+        );
+
+        const retryResult = await this.retryWithFeedback(task, context, validation.errors);
+        if (!retryResult?.generatedCode) break; // nothing usable; keep best so far
+
+        const retryValidation = await this.validateOutput(retryResult.generatedCode, task, context);
+
+        // Keep the retry only if it is valid or strictly reduced the error count.
+        if (retryValidation.isValid || retryValidation.errors.length < validation.errors.length) {
+          result = retryResult;
+          validation = retryValidation;
+        } else {
+          break; // no improvement — stop and keep the previous best attempt
+        }
+      }
+
+      if (!validation.isValid) {
+        console.warn(
+          `[${this.agentId}] Shipping task ${taskId} with ${validation.errors.length} ` +
+            `unresolved validation error(s) after ${regenerations} regeneration(s)`
+        );
+      }
+      if (validation.warnings.length > 0) {
+        console.log(`[${this.agentId}] Validation notes: ${validation.warnings.slice(0, 2).join(', ')}`);
+      }
+    } catch (validationError) {
+      // Never let validation itself break task execution.
+      console.warn(
+        `[${this.agentId}] Validation error for task ${taskId}: ` +
+          `${validationError instanceof Error ? validationError.message : String(validationError)}`
+      );
+    }
+
+    return result;
+  }
+
+  /**
    * Validate output from task execution
    * Override in subclasses to provide validation logic
    * Default implementation returns valid
@@ -403,6 +441,22 @@ export abstract class BaseAgent {
       errors: [],
       warnings: []
     };
+  }
+
+  /**
+   * Merge any validation feedback from the execution context into a task's
+   * context string, so a regeneration prompt explicitly tells the model what
+   * to fix. Returns the base context unchanged when there is no feedback.
+   */
+  protected appendValidationFeedback(baseContext: string | undefined, context: any): string {
+    const base = baseContext || '';
+    const feedback = context?.errorFeedback;
+    if (!feedback) return base;
+    return (
+      `${base}\n\n## FIX REQUIRED — the previous attempt failed validation:\n` +
+      `${feedback}\n` +
+      `Regenerate corrected code that resolves every issue above.`
+    );
   }
 
   /**

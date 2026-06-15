@@ -233,7 +233,7 @@ IMPORTANT:
         task.description || 'Styling',
         designBrief,
         htmlStructure,
-        task.context
+        this.appendValidationFeedback(task.context, context)
       );
 
       this.emitProgress(task.id, '', 100, 'Styling generation complete');
