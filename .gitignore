@@ -44,5 +44,12 @@ Thumbs.db
 coverage/
 .nyc_output/
 
+# Generated app output (runtime artifacts, not source)
+generated-apps/
+
+# Tooling / agent scratch dirs
+.superpowers/
+docs/superpowers/
+
 # Docker
 .dockerignore
