@@ -10,6 +10,7 @@ import ParallelExecutionEngine, {
 } from '../../src/services/ParallelExecutionEngine';
 import { MessageBus } from '../../src/services/MessageBus';
 import { MockTaskStore } from '../fixtures/mockServices';
+import { onBroadcastEvent } from '../fixtures/eventHelpers';
 
 describe('Phase 4: Error Handling & Retries', () => {
   let engine: ParallelExecutionEngine;
@@ -53,7 +54,7 @@ describe('Phase 4: Error Handling & Retries', () => {
         done();
       });
 
-      messageBus.on('task:retry', handler);
+      onBroadcastEvent(messageBus, 'task:retry', handler);
 
       engine.registerAgent('agent-1', 'backend', ['nodejs']).then(() => {
         engine.startExecuting('project-1').then(() => {
@@ -113,7 +114,7 @@ describe('Phase 4: Error Handling & Retries', () => {
         done();
       });
 
-      messageBus.on('task:retry', handler);
+      onBroadcastEvent(messageBus, 'task:retry', handler);
 
       engine.registerAgent('agent-1', 'backend', ['nodejs']).then(() => {
         engine.startExecuting('project-1').then(() => {
@@ -165,7 +166,7 @@ describe('Phase 4: Error Handling & Retries', () => {
       engine.setMaxRetries(1);
 
       const handler = jest.fn();
-      messageBus.on('task:retry', handler);
+      onBroadcastEvent(messageBus, 'task:retry', handler);
 
       await engine.registerAgent('agent-1', 'backend', ['nodejs']);
       await engine.startExecuting('project-1');

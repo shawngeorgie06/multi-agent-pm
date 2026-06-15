@@ -10,6 +10,7 @@ import ParallelExecutionEngine, {
 } from '../../src/services/ParallelExecutionEngine';
 import { MessageBus } from '../../src/services/MessageBus';
 import { MockTaskStore } from '../fixtures/mockServices';
+import { onBroadcastEvent } from '../fixtures/eventHelpers';
 
 describe('Phase 4: Parallel Execution', () => {
   let engine: ParallelExecutionEngine;
@@ -62,7 +63,7 @@ describe('Phase 4: Parallel Execution', () => {
         done();
       });
 
-      messageBus.on('task:started', handler);
+      onBroadcastEvent(messageBus, 'task:started', handler);
 
       engine.registerAgent('agent-1', 'backend', ['nodejs']).then(() => {
         engine.startExecuting('project-1').then(() => {
@@ -79,7 +80,7 @@ describe('Phase 4: Parallel Execution', () => {
         done();
       });
 
-      messageBus.on('task:completed', handler);
+      onBroadcastEvent(messageBus, 'task:completed', handler);
 
       engine.registerAgent('agent-1', 'backend', ['nodejs']).then(() => {
         engine.startExecuting('project-1').then(() => {

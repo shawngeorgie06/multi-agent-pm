@@ -77,7 +77,7 @@ describe('Phase 5: Team Performance & Optimization', () => {
       expect(velocity).toBe(0); // Initial velocity
 
       // Simulate task completion
-      messageBus.emit('task:completed', {
+      messageBus.broadcast({ event: 'task:completed',
         projectId: 'proj-1',
         taskId: 'task-1',
         agentId: 'dev-1',
@@ -99,7 +99,7 @@ describe('Phase 5: Team Performance & Optimization', () => {
       messageBus.on('velocity:updated', handler);
 
       // Trigger velocity update
-      messageBus.emit('task:completed', {
+      messageBus.broadcast({ event: 'task:completed',
         projectId: 'proj-1',
         taskId: 'task-1',
         agentId: 'dev-1',
@@ -281,7 +281,7 @@ describe('Phase 5: Team Performance & Optimization', () => {
 
     test('should track agent productivity', async () => {
       // First trigger a metrics update
-      messageBus.emit('task:completed', {
+      messageBus.broadcast({ event: 'task:completed',
         projectId: 'proj-1',
         taskId: 'task-1',
         agentId: 'dev-1',
@@ -497,7 +497,7 @@ describe('Phase 5: Team Performance & Optimization', () => {
       expect(members[0].isAvailable).toBe(true);
 
       // Emit agent offline event
-      messageBus.emit('agent:offline', {
+      messageBus.broadcast({ event: 'agent:offline',
         agentId: 'dev-1',
         projectId: 'proj-1',
       });
@@ -511,7 +511,7 @@ describe('Phase 5: Team Performance & Optimization', () => {
       const initialFailures = members[0].failureCount;
 
       // Emit task failure
-      messageBus.emit('task:failed', {
+      messageBus.broadcast({ event: 'task:failed',
         projectId: 'proj-1',
         agentId: 'dev-1',
         taskId: 'task-1',
@@ -527,7 +527,7 @@ describe('Phase 5: Team Performance & Optimization', () => {
       const initialCompleted = members[0].completedCount;
 
       // Emit task completion
-      messageBus.emit('task:completed', {
+      messageBus.broadcast({ event: 'task:completed',
         projectId: 'proj-1',
         agentId: 'dev-1',
         taskId: 'task-1',

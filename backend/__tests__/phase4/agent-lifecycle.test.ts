@@ -7,6 +7,7 @@ import { describe, test, expect, beforeEach, afterEach } from '@jest/globals';
 import ParallelExecutionEngine, { AgentState } from '../../src/services/ParallelExecutionEngine';
 import { MessageBus } from '../../src/services/MessageBus';
 import { MockTaskStore } from '../fixtures/mockServices';
+import { onBroadcastEvent } from '../fixtures/eventHelpers';
 
 describe('Phase 4: Agent Lifecycle Management', () => {
   let engine: ParallelExecutionEngine;
@@ -57,7 +58,7 @@ describe('Phase 4: Agent Lifecycle Management', () => {
         done();
       });
 
-      messageBus.on('agent:registered', handler);
+      onBroadcastEvent(messageBus, 'agent:registered', handler);
       engine.registerAgent('agent-1', 'frontend', ['react']);
     });
 
@@ -100,7 +101,7 @@ describe('Phase 4: Agent Lifecycle Management', () => {
         done();
       });
 
-      messageBus.on('agent:heartbeat', handler);
+      onBroadcastEvent(messageBus, 'agent:heartbeat', handler);
 
       engine.registerAgent('agent-1', 'backend', ['nodejs']).then(() => {
         engine.updateAgentHeartbeat('agent-1');
@@ -120,7 +121,7 @@ describe('Phase 4: Agent Lifecycle Management', () => {
         expect(data.agentId).toBe('agent-1');
       });
 
-      messageBus.on('agent:online', handler);
+      onBroadcastEvent(messageBus, 'agent:online', handler);
 
       await engine.updateAgentHeartbeat('agent-1');
 
@@ -166,7 +167,7 @@ describe('Phase 4: Agent Lifecycle Management', () => {
         done();
       });
 
-      messageBus.on('agent:unregistered', handler);
+      onBroadcastEvent(messageBus, 'agent:unregistered', handler);
 
       engine.registerAgent('agent-1', 'backend', ['nodejs']).then(() => {
         engine.unregisterAgent('agent-1');

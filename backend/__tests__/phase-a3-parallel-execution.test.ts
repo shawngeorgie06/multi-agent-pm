@@ -128,11 +128,12 @@ describe('Phase A3: Parallel Execution', () => {
     });
 
     it('should support state change listeners', (done) => {
-      let eventCount = 0;
+      // initializeTask fires an INITIALIZE event (currentState TODO) before any
+      // transition, so assert specifically on the CLAIMED transition rather than
+      // assuming it is the first event received.
       const unsubscribe = stateMachine.onStateChange((event) => {
-        eventCount++;
-        if (eventCount === 1) {
-          expect(event.currentState).toBe(TaskState.CLAIMED);
+        if (event.currentState === TaskState.CLAIMED) {
+          expect(event.previousState).toBe(TaskState.TODO);
           unsubscribe();
           done();
         }
@@ -168,7 +169,7 @@ describe('Phase A3: Parallel Execution', () => {
     it('should track task timeouts', (done) => {
       monitoringService.startMonitoring();
 
-      messageBus.emit('task:started', {
+      messageBus.broadcast({ event: 'task:started',
         taskId: 'task-1',
         projectId: 'project-1',
         agentId: 'agent-1'
@@ -185,7 +186,7 @@ describe('Phase A3: Parallel Execution', () => {
     });
 
     it('should track agent heartbeats', (done) => {
-      messageBus.emit('agent:registered', {
+      messageBus.broadcast({ event: 'agent:registered',
         agentId: 'agent-1',
         agentType: 'FRONTEND'
       });
@@ -204,6 +205,10 @@ describe('Phase A3: Parallel Execution', () => {
         defaultTimeoutMs: 100,
         warningThresholdMs: 0.5
       });
+      // Health checks (which emit the warning) run on this interval; the default
+      // 5s is far longer than this test's 100ms window, so shorten it so the
+      // warning fires deterministically before the assertion below.
+      monitoringService.setHeartbeatConfig({ intervalMs: 20 });
 
       let warningEmitted = false;
       messageBus.on('task:timeout:warning', () => {
@@ -212,7 +217,7 @@ describe('Phase A3: Parallel Execution', () => {
 
       monitoringService.startMonitoring();
 
-      messageBus.emit('task:started', {
+      messageBus.broadcast({ event: 'task:started',
         taskId: 'task-1',
         projectId: 'project-1',
         agentId: 'agent-1'
@@ -226,9 +231,9 @@ describe('Phase A3: Parallel Execution', () => {
     });
 
     it('should update agent heartbeat status', (done) => {
-      messageBus.emit('agent:registered', { agentId: 'agent-1' });
+      messageBus.broadcast({ event: 'agent:registered', agentId: 'agent-1' });
 
-      messageBus.emit('agent:heartbeat', { agentId: 'agent-1' });
+      messageBus.broadcast({ event: 'agent:heartbeat', agentId: 'agent-1' });
 
       setTimeout(() => {
         const status = monitoringService.getAgentHealthStatus();
@@ -360,7 +365,7 @@ describe('Phase A3: Parallel Execution', () => {
 
     it('should register agents', () => {
       // Simulate agent registration via MessageBus
-      messageBus.emit('agent:registered', {
+      messageBus.broadcast({ event: 'agent:registered',
         agentId: 'agent-1',
         agentType: 'FRONTEND',
         capabilities: ['html', 'css']
@@ -372,7 +377,7 @@ describe('Phase A3: Parallel Execution', () => {
     });
 
     it('should get agent status', () => {
-      messageBus.emit('agent:registered', {
+      messageBus.broadcast({ event: 'agent:registered',
         agentId: 'agent-1',
         agentType: 'FRONTEND',
         capabilities: ['html']
@@ -385,13 +390,13 @@ describe('Phase A3: Parallel Execution', () => {
     });
 
     it('should track agent availability', () => {
-      messageBus.emit('agent:registered', {
+      messageBus.broadcast({ event: 'agent:registered',
         agentId: 'agent-1',
         agentType: 'FRONTEND',
         capabilities: ['html']
       });
 
-      messageBus.emit('agent:heartbeat', {
+      messageBus.broadcast({ event: 'agent:heartbeat',
         agentId: 'agent-1',
         state: 'busy'
       });
@@ -403,7 +408,7 @@ describe('Phase A3: Parallel Execution', () => {
     it('should set max concurrent tasks per agent', () => {
       distributionService.setMaxConcurrentTasksPerAgent(5);
 
-      messageBus.emit('agent:registered', {
+      messageBus.broadcast({ event: 'agent:registered',
         agentId: 'agent-1',
         agentType: 'FRONTEND',
         capabilities: ['html']
@@ -414,7 +419,7 @@ describe('Phase A3: Parallel Execution', () => {
     });
 
     it('should unregister agents', () => {
-      messageBus.emit('agent:registered', {
+      messageBus.broadcast({ event: 'agent:registered',
         agentId: 'agent-1',
         agentType: 'FRONTEND',
         capabilities: ['html']

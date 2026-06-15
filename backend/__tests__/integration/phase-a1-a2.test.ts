@@ -9,6 +9,7 @@ import { TaskQueueManager } from '../../src/services/TaskQueueManager.js';
 import { TaskDistributionService } from '../../src/services/TaskDistributionService.js';
 import { AgentClaimingHelper } from '../../src/services/AgentClaimingHelper.js';
 import prisma from '../../src/database/db.js';
+import { isDatabaseReachable } from '../fixtures/dbAvailable';
 
 // Mock data
 const mockProject = {
@@ -45,7 +46,18 @@ const mockTasks = [
   }
 ];
 
-describe('Phase A1 + A2 Integration Tests', () => {
+// Real integration tests that read/write Postgres. Skip (rather than fail) when
+// no database is reachable so the default test run is green without infra; run
+// `docker compose up -d postgres` to enable them.
+const dbAvailable = isDatabaseReachable();
+const describeIntegration = dbAvailable ? describe : describe.skip;
+if (!dbAvailable) {
+  console.warn(
+    '[integration] Skipping phase-a1-a2 DB tests: DATABASE_URL is not reachable. Run `docker compose up -d postgres` to enable them.'
+  );
+}
+
+describeIntegration('Phase A1 + A2 Integration Tests', () => {
   let messageBus: MessageBus;
   let taskQueueManager: TaskQueueManager;
   let taskDistributionService: TaskDistributionService;
