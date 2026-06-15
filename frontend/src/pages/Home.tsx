@@ -111,12 +111,6 @@ function AgentTerminal() {
   );
 }
 
-const templates = [
-  { emoji: "🧮", label: "Calculator", text: "Build a scientific calculator that can perform basic math operations (add, subtract, multiply, divide), plus advanced functions like square root, percentage, and power (exponent). Include a clear display for results, history of previous calculations, and clear/delete buttons." },
-  { emoji: "✅", label: "Todo List", text: "Build a todo application with an input field to add new tasks, a list displaying all tasks, checkboxes to mark tasks as complete, delete buttons for each task, and a clear all completed button. Include localStorage persistence so tasks are saved across page refreshes." },
-  { emoji: "🌤️", label: "Weather", text: "Build a weather dashboard with a search input to find cities, display current weather with temperature and conditions, show a 7-day forecast, include weather icons, add loading states, and error handling for invalid locations." },
-  { emoji: "🛍️", label: "E-Commerce", text: "Build an e-commerce shopping site with a product listing grid, product detail views, add to cart functionality, a shopping cart modal showing items and quantities, price totals, remove from cart buttons, and a checkout button with mock order processing." },
-];
 
 const steps = [
   {
@@ -560,24 +554,10 @@ export default function Home() {
                   className="project-textarea"
                   value={projectInput}
                   onChange={e => { setProjectInput(e.target.value); setError(null); }}
-                  placeholder="Describe your project... (e.g., Build a weather dashboard with city search and a 7-day forecast)"
+                  placeholder="Describe what you want to build..."
                   rows={3}
                 />
                 {error && <p className="form-error">{error}</p>}
-              </div>
-
-              <p className="templates-label">QUICK START</p>
-              <div className="templates-grid">
-                {templates.map(t => (
-                  <button
-                    key={t.label}
-                    type="button"
-                    className="template-btn"
-                    onClick={() => { setProjectInput(t.text); setError(null); }}
-                  >
-                    {t.emoji} {t.label}
-                  </button>
-                ))}
               </div>
 
               <button type="submit" disabled={isCreating} className="create-btn">

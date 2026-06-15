@@ -9,6 +9,7 @@
 
 import { MessageBus } from '../services/MessageBus.js';
 import { AgentClaimingHelper } from '../services/AgentClaimingHelper.js';
+import { CodeValidationService } from '../services/CodeValidationService.js';
 import prisma from '../database/db.js';
 
 export enum AgentState {
@@ -223,7 +224,29 @@ export abstract class BaseAgent {
 
       // Execute the task (implemented by subclasses) with context
       const startTime = Date.now();
-      const result = await this.executeTask(task, taskContext);
+      let result = await this.executeTask(task, taskContext);
+
+      // Validate generated code before marking complete (soft validation)
+      if (result?.generatedCode) {
+        try {
+          const validation = await this.validateOutput(result.generatedCode, task, taskContext);
+
+          if (!validation.isValid && validation.errors.length > 0) {
+            console.warn(`[${this.agentId}] Validation warnings for task ${taskId}. Issues: ${validation.errors.slice(0, 2).join(', ')}`);
+
+            // Log but don't fail - continue with the generated code
+            // This is a soft validation to guide future improvements
+          }
+
+          if (validation.warnings.length > 0) {
+            console.log(`[${this.agentId}] Validation notes: ${validation.warnings.slice(0, 2).join(', ')}`);
+          }
+        } catch (validationError) {
+          // If validation itself fails, just log and continue
+          console.warn(`[${this.agentId}] Validation error for task ${taskId}: ${validationError instanceof Error ? validationError.message : String(validationError)}`);
+        }
+      }
+
       const duration = Date.now() - startTime;
 
       // Report successful completion
@@ -286,6 +309,7 @@ export abstract class BaseAgent {
    * Start periodic heartbeat to signal agent is online
    */
   protected startHeartbeat(): void {
+    if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
     this.heartbeatInterval = setInterval(() => {
       this.messageBus.broadcast({
         event: 'agent:heartbeat',
@@ -361,5 +385,42 @@ export abstract class BaseAgent {
    */
   public isActive(): boolean {
     return this.isListening && this.state !== AgentState.OFFLINE;
+  }
+
+  /**
+   * Validate output from task execution
+   * Override in subclasses to provide validation logic
+   * Default implementation returns valid
+   */
+  protected async validateOutput(
+    generatedCode: string,
+    task: any,
+    context: any
+  ): Promise<{ isValid: boolean; errors: string[]; warnings: string[] }> {
+    // Default implementation - no validation
+    return {
+      isValid: true,
+      errors: [],
+      warnings: []
+    };
+  }
+
+  /**
+   * Retry task execution with feedback about validation errors
+   * Override in subclasses to provide better feedback
+   */
+  protected async retryWithFeedback(
+    task: any,
+    context: any,
+    errors: string[]
+  ): Promise<any> {
+    // Default implementation - retry without modification
+    console.log(`[${this.agentId}] Retrying with feedback about: ${errors.join(', ')}`);
+    return await this.executeTask(task, {
+      ...context,
+      validationErrors: errors,
+      previousAttempt: true,
+      errorFeedback: `Previous attempt failed validation. Fix: ${errors.join('; ')}`
+    });
   }
 }

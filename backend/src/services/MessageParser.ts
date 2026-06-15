@@ -319,14 +319,22 @@ export class MessageParser {
     console.log('[PARSER] Generating fallback tasks due to parsing failure');
 
     // Detect project type for more relevant fallback tasks
+    const isWeatherApp = /weather|forecast|temperature|humidity|wind/i.test(projectDescription);
     const isWebProject = /website|web page|html|calculator|app|ui|frontend|page|landing|interface|form/i.test(projectDescription);
     const isAPI = /api|backend|server|database|integration/i.test(projectDescription);
 
-    if (isWebProject) {
+    // Special-case weather apps so fallback tasks still build a weather UI instead of a generic todo app
+    if (isWeatherApp) {
       return [
         {
           taskId: 'PM-001',
-          description: 'Code Generation - HTML/Layout Structure\n\nFallback task: Generate basic HTML layout and structure for the project.',
+          description:
+            'Weather App - HTML Layout\n\n' +
+            'Fallback task: Create the complete HTML structure for this weather dashboard based on the original request:\n' +
+            `"${projectDescription}".\n\n` +
+            '- Include a search input for city name (id="city-input") and a search button (id="search-btn").\n' +
+            '- Add a main weather display area with elements for temperature (id="temp"), description (id="description"), humidity (id="humidity"), and wind speed (id="wind").\n' +
+            '- Add a container for a simple multi-day forecast (id="forecast").',
           status: 'TODO' as TaskStatus,
           priority: 'HIGH' as TaskPriority,
           estimatedHours: 0.5,
@@ -334,7 +342,11 @@ export class MessageParser {
         },
         {
           taskId: 'PM-002',
-          description: 'Code Generation - CSS Styling\n\nFallback task: Add CSS styling and visual design to the generated HTML.',
+          description:
+            'Weather App - CSS Styling\n\n' +
+            'Fallback task: Style the weather dashboard HTML from PM-001 with CSS.\n' +
+            '- Apply a modern, responsive layout (cards, gradients, spacing) suitable for the requested dashboard.\n' +
+            '- Make sure all IDs/classes used in the HTML are styled so the UI looks like a polished weather app.',
           status: 'TODO' as TaskStatus,
           priority: 'MEDIUM' as TaskPriority,
           estimatedHours: 0.5,
@@ -342,7 +354,50 @@ export class MessageParser {
         },
         {
           taskId: 'PM-003',
-          description: 'Code Generation - JavaScript Logic\n\nFallback task: Implement JavaScript interactivity and dynamic behavior.',
+          description:
+            'Weather App - JavaScript Logic\n\n' +
+            'Fallback task: Implement JavaScript logic for the weather dashboard based on the original request:\n' +
+            `"${projectDescription}".\n\n` +
+            '- On search, fetch weather data (real API or mock data) for the entered city.\n' +
+            '- Update the DOM elements created in PM-001 (temp, description, humidity, wind, forecast).\n' +
+            '- Show loading and error states with friendly messages.',
+          status: 'TODO' as TaskStatus,
+          priority: 'HIGH' as TaskPriority,
+          estimatedHours: 0.5,
+          dependencies: ['PM-001', 'PM-002'],
+        },
+      ];
+    }
+
+    if (isWebProject) {
+      return [
+        {
+          taskId: 'PM-001',
+          description:
+            'Code Generation - HTML/Layout Structure\n\n' +
+            'Fallback task: Generate the core HTML layout and structure for this project based on the original request:\n' +
+            `"${projectDescription}".`,
+          status: 'TODO' as TaskStatus,
+          priority: 'HIGH' as TaskPriority,
+          estimatedHours: 0.5,
+          dependencies: undefined,
+        },
+        {
+          taskId: 'PM-002',
+          description:
+            'Code Generation - CSS Styling\n\n' +
+            'Fallback task: Add CSS styling and visual design to the HTML from PM-001 so it matches the intent of the original request.',
+          status: 'TODO' as TaskStatus,
+          priority: 'MEDIUM' as TaskPriority,
+          estimatedHours: 0.5,
+          dependencies: ['PM-001'],
+        },
+        {
+          taskId: 'PM-003',
+          description:
+            'Code Generation - JavaScript Logic\n\n' +
+            'Fallback task: Implement JavaScript interactivity and dynamic behavior for this project. ' +
+            'Use the IDs and structure from PM-001 so all requested features work (buttons, forms, search, etc.).',
           status: 'TODO' as TaskStatus,
           priority: 'HIGH' as TaskPriority,
           estimatedHours: 0.5,

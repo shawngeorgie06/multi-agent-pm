@@ -3,7 +3,7 @@ import { io, Socket } from "socket.io-client";
 import { Badge } from "@/components/ui/badge";
 import { Loader2, AlertCircle, CheckCircle2, MessageSquare, Zap, Clock } from "lucide-react";
 import { WS_URL } from "@/lib/api";
-import { formatAgentActivity, getAgentEmoji } from "@/utils/activityFormatter";
+import { formatAgentActivity, getAgentBadge } from "@/utils/activityFormatter";
 
 interface ActivityEvent {
   id: string;
@@ -29,15 +29,11 @@ export function LiveActivityFeed({ projectId, taskId, title = "LIVE ACTIVITY" }:
   const [connected, setConnected] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
 
-  // Filter events based on taskId if provided
   const filteredEvents = taskId
     ? events.filter((e) => e.taskId === taskId || e.type === "agent_activity")
     : events.filter((e) => e.projectId === projectId);
 
-  // Clear events when projectId changes
-  useEffect(() => {
-    setEvents([]);
-  }, [projectId]);
+  useEffect(() => { setEvents([]); }, [projectId]);
 
   useEffect(() => {
     const newSocket = io(WS_URL, {
@@ -47,202 +43,82 @@ export function LiveActivityFeed({ projectId, taskId, title = "LIVE ACTIVITY" }:
       reconnectionAttempts: 5,
     });
 
-    newSocket.on("connect", () => {
-      setConnected(true);
-    });
+    newSocket.on("connect", () => setConnected(true));
+    newSocket.on("disconnect", () => setConnected(false));
 
-    newSocket.on("disconnect", () => {
-      setConnected(false);
-    });
-
-    // Listen for project status changes
     newSocket.on("project_status_changed", (data) => {
       if (!projectId || data.projectId === projectId) {
-        setEvents((prev) => [
-          ...prev,
-          {
-            id: `status-${Date.now()}`,
-            type: "project_status",
-            projectId: data.projectId,
-            title: "Project Status",
-            message: data.message || data.status,
-            timestamp: data.timestamp,
-          },
-        ]);
+        setEvents((prev) => [...prev, { id: `status-${Date.now()}`, type: "project_status", projectId: data.projectId, title: "Project Status", message: data.message || data.status, timestamp: data.timestamp }]);
       }
     });
 
-    // Listen for agent activity
     newSocket.on("agent_activity", (data) => {
       if (!projectId || data.projectId === projectId) {
-        setEvents((prev) => [
-          ...prev,
-          {
-            id: `activity-${Date.now()}`,
-            type: "agent_activity",
-            projectId: data.projectId,
-            agent: data.agent,
-            title: `${data.agent} is working...`,
-            message: data.message,
-            timestamp: data.timestamp,
-          },
-        ]);
+        setEvents((prev) => [...prev, { id: `activity-${Date.now()}`, type: "agent_activity", projectId: data.projectId, agent: data.agent, title: `${data.agent} is working...`, message: data.message, timestamp: data.timestamp }]);
       }
     });
 
-    // Listen for agent messages
     newSocket.on("message_received", (data) => {
       if (!projectId || data.projectId === projectId) {
-        setEvents((prev) => [
-          ...prev,
-          {
-            id: `message-${Date.now()}`,
-            type: "message",
-            projectId: data.projectId,
-            title: "Agent Message",
-            message: data.message?.content || JSON.stringify(data.message).substring(0, 100),
-            timestamp: data.timestamp,
-            data,
-          },
-        ]);
+        setEvents((prev) => [...prev, { id: `message-${Date.now()}`, type: "message", projectId: data.projectId, title: "Agent Message", message: data.message?.content || JSON.stringify(data.message).substring(0, 100), timestamp: data.timestamp, data }]);
       }
     });
 
-    // Listen for task streaming
     newSocket.on("task_streamed", (data) => {
       if (!projectId || data.projectId === projectId) {
-        setEvents((prev) => [
-          ...prev,
-          {
-            id: `task-${data.task.taskId}-${Date.now()}`,
-            type: "task_streamed",
-            projectId: data.projectId,
-            taskId: data.task.taskId,
-            title: `Task Created: ${data.task.taskId}`,
-            message: data.task.description,
-            timestamp: data.timestamp,
-            data: data.task,
-          },
-        ]);
+        setEvents((prev) => [...prev, { id: `task-${data.task.taskId}-${Date.now()}`, type: "task_streamed", projectId: data.projectId, taskId: data.task.taskId, title: `Task Created: ${data.task.taskId}`, message: data.task.description, timestamp: data.timestamp, data: data.task }]);
       }
     });
 
-    // Listen for task updates
     newSocket.on("task_updated", (data) => {
       if (!projectId || data.projectId === projectId) {
-        setEvents((prev) => [
-          ...prev,
-          {
-            id: `task-update-${data.task.taskId}-${Date.now()}`,
-            type: "task_updated",
-            projectId: data.projectId,
-            taskId: data.task.taskId,
-            title: `Task Updated: ${data.task.taskId}`,
-            message: `Status: ${data.task.status}`,
-            timestamp: data.timestamp,
-            data: data.task,
-          },
-        ]);
+        setEvents((prev) => [...prev, { id: `task-update-${data.task.taskId}-${Date.now()}`, type: "task_updated", projectId: data.projectId, taskId: data.task.taskId, title: `Task Updated: ${data.task.taskId}`, message: `Status: ${data.task.status}`, timestamp: data.timestamp, data: data.task }]);
       }
     });
 
-    // Listen for errors
     newSocket.on("parsing_error", (data) => {
       if (!projectId || data.projectId === projectId) {
-        setEvents((prev) => [
-          ...prev,
-          {
-            id: `error-${Date.now()}`,
-            type: "error",
-            projectId: data.projectId,
-            title: "Error",
-            message: data.errorMessage,
-            timestamp: data.timestamp,
-          },
-        ]);
+        setEvents((prev) => [...prev, { id: `error-${Date.now()}`, type: "error", projectId: data.projectId, title: "Error", message: data.errorMessage, timestamp: data.timestamp }]);
       }
     });
 
-    // Listen for research completion
     newSocket.on("research_complete", (data) => {
       if (!projectId || data.projectId === projectId) {
-        setEvents((prev) => [
-          ...prev,
-          {
-            id: `research-${Date.now()}`,
-            type: "research_complete",
-            projectId: data.projectId,
-            title: "Research Analysis Complete",
-            message: `Project Type: ${data.research?.projectType || 'Unknown'}`,
-            timestamp: data.timestamp,
-            data: data.research,
-          },
-        ]);
+        setEvents((prev) => [...prev, { id: `research-${Date.now()}`, type: "research_complete", projectId: data.projectId, title: "Research Analysis Complete", message: `Project Type: ${data.research?.projectType || "Unknown"}`, timestamp: data.timestamp, data: data.research }]);
       }
     });
 
-    // Listen for QA report
     newSocket.on("qa_report", (data) => {
       if (!projectId || data.projectId === projectId) {
-        setEvents((prev) => [
-          ...prev,
-          {
-            id: `qa-${Date.now()}`,
-            type: "qa_report",
-            projectId: data.projectId,
-            title: `QA Validation: ${data.report?.status || 'Unknown'}`,
-            message: data.report?.summary || "QA validation completed",
-            timestamp: data.timestamp,
-            data: data.report,
-          },
-        ]);
+        setEvents((prev) => [...prev, { id: `qa-${Date.now()}`, type: "qa_report", projectId: data.projectId, title: `QA Validation: ${data.report?.status || "Unknown"}`, message: data.report?.summary || "QA validation completed", timestamp: data.timestamp, data: data.report }]);
       }
     });
 
-    // Listen for agent progress
     newSocket.on("agent_progress", (data) => {
       if (!projectId || data.projectId === projectId) {
-        setEvents((prev) => [
-          ...prev,
-          {
-            id: `progress-${Date.now()}`,
-            type: "agent_progress",
-            projectId: data.projectId,
-            agent: data.agent,
-            title: `${data.agent} - ${data.phase}`,
-            message: data.message,
-            timestamp: data.timestamp,
-            data,
-          },
-        ]);
+        setEvents((prev) => [...prev, { id: `progress-${Date.now()}`, type: "agent_progress", projectId: data.projectId, agent: data.agent, title: `${data.agent} - ${data.phase}`, message: data.message, timestamp: data.timestamp, data }]);
       }
     });
 
     setSocket(newSocket);
-
-    return () => {
-      newSocket.disconnect();
-    };
+    return () => { newSocket.disconnect(); };
   }, [projectId, taskId]);
 
-  // Auto-scroll to latest event
-  useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [events]);
+  useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [events]);
 
   const getEventColor = (style: string) => {
     switch (style) {
       case "success":
-        return "border-l-4 border-green-500 bg-green-50 hover:bg-green-100";
+        return "border-l-2 border-[#4edea3] bg-[#4edea3]/5";
       case "working":
-        return "border-l-4 border-blue-500 bg-blue-50 hover:bg-blue-100";
+        return "border-l-2 border-[#0EA5E9] bg-[#0EA5E9]/5";
       case "waiting":
-        return "border-l-4 border-yellow-500 bg-yellow-50 hover:bg-yellow-100";
+        return "border-l-2 border-[#f59e0b] bg-[#f59e0b]/5";
       case "error":
-        return "border-l-4 border-red-500 bg-red-50 hover:bg-red-100";
+        return "border-l-2 border-[#ffb4ab] bg-[#ffb4ab]/5";
       case "info":
       default:
-        return "border-l-4 border-gray-400 bg-gray-50 hover:bg-gray-100";
+        return "border-l-2 border-[#3e4850] bg-[#201f1f]/50";
     }
   };
 
@@ -264,13 +140,13 @@ export function LiveActivityFeed({ projectId, taskId, title = "LIVE ACTIVITY" }:
   const getStatusBadgeColor = (style: string) => {
     switch (style) {
       case "success":
-        return "bg-green-100 text-green-800 border-green-300";
+        return "bg-[#4edea3]/10 text-[#4edea3] border-[#4edea3]/20";
       case "working":
-        return "bg-blue-100 text-blue-800 border-blue-300";
+        return "bg-[#0EA5E9]/10 text-[#0EA5E9] border-[#0EA5E9]/20";
       case "waiting":
-        return "bg-yellow-100 text-yellow-800 border-yellow-300";
+        return "bg-[#f59e0b]/10 text-[#f59e0b] border-[#f59e0b]/20";
       case "error":
-        return "bg-red-100 text-red-800 border-red-300";
+        return "bg-[#ffb4ab]/10 text-[#ffb4ab] border-[#ffb4ab]/20";
       default:
         return "";
     }
@@ -285,32 +161,30 @@ export function LiveActivityFeed({ projectId, taskId, title = "LIVE ACTIVITY" }:
   };
 
   return (
-    <div className="flex flex-col h-full bg-white border-2 border-black rounded-lg">
+    <div className="flex flex-col h-full bg-[#131313] rounded-lg border border-[#3e4850]/20">
       {/* Header */}
-      <div className="border-b-2 border-black p-4 flex items-center justify-between">
-        <h3 className="font-bold text-lg flex items-center gap-2">
-          <Zap className="w-5 h-5" />
+      <div className="border-b border-[#3e4850]/20 px-5 py-3 flex items-center justify-between bg-[#201f1f]">
+        <h3 className="font-extrabold text-xs uppercase tracking-[0.2em] text-[#e5e2e1] font-['Manrope',sans-serif] flex items-center gap-2">
+          <Zap className="w-4 h-4 text-[#0EA5E9]" />
           {title}
         </h3>
         <div className="flex items-center gap-2">
-          <div
-            className={`w-3 h-3 rounded-full ${
-              connected ? "bg-green-500 animate-pulse" : "bg-red-500"
-            }`}
-          ></div>
-          <span className="text-xs font-medium text-gray-600">
-            {connected ? "CONNECTED" : "DISCONNECTED"}
+          <div className={`w-1.5 h-1.5 rounded-full ${connected ? "bg-[#4edea3] animate-pulse" : "bg-[#ffb4ab]"}`} />
+          <span className="text-[10px] font-extrabold uppercase tracking-widest" style={{ color: connected ? "#4edea3" : "#ffb4ab" }}>
+            {connected ? "Live" : "Offline"}
           </span>
         </div>
       </div>
 
-      {/* Feed - Chat-like conversation view */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-2">
+      {/* Feed */}
+      <div className="flex-1 overflow-y-auto p-4 space-y-1.5 max-h-[400px]">
         {filteredEvents.length === 0 ? (
-          <div className="text-center py-8 text-gray-500">
-            <MessageSquare className="w-12 h-12 mx-auto mb-3 opacity-50" />
-            <p className="text-sm font-medium">No activity yet</p>
-            <p className="text-xs text-gray-400">{taskId ? "Waiting for agent communication..." : "Create a project to see live updates"}</p>
+          <div className="text-center py-10">
+            <MessageSquare className="w-10 h-10 mx-auto mb-3 text-[#3e4850]" />
+            <p className="text-sm font-semibold text-[#88929b]">No activity yet</p>
+            <p className="text-xs text-[#3e4850] mt-1">
+              {taskId ? "Waiting for agent communication..." : "Create a project to see live updates"}
+            </p>
           </div>
         ) : (
           filteredEvents.map((event) => {
@@ -321,36 +195,47 @@ export function LiveActivityFeed({ projectId, taskId, title = "LIVE ACTIVITY" }:
                 className={`p-3 rounded-lg transition-all ${getEventColor(formatted.style)}`}
               >
                 <div className="flex items-start gap-3">
-                  {/* Agent Avatar/Icon */}
-                  <div className="flex-shrink-0 w-8 h-8 rounded-full bg-white border-2 border-gray-300 flex items-center justify-center text-lg">
-                    {getAgentEmoji(formatted.speaker)}
-                  </div>
+                  {/* Agent Badge */}
+                  {formatted.agentBadge ? (
+                    <div
+                      className="flex-shrink-0 w-8 h-8 rounded-lg flex items-center justify-center font-bold text-xs border border-[#3e4850]/30"
+                      style={{
+                        backgroundColor: formatted.agentBadge.bgColor?.includes("#") ? formatted.agentBadge.bgColor : undefined,
+                        color: formatted.agentBadge.color?.includes("#") ? formatted.agentBadge.color : undefined,
+                      }}
+                    >
+                      {formatted.agentBadge.abbreviation}
+                    </div>
+                  ) : (
+                    <div className="flex-shrink-0 w-8 h-8 rounded-lg bg-[#2a2a2a] border border-[#3e4850]/30 flex items-center justify-center font-bold text-xs text-[#88929b]">
+                      ?
+                    </div>
+                  )}
 
                   <div className="flex-1 min-w-0">
-                    {/* Header: Agent name + action + time */}
+                    {/* Header */}
                     <div className="flex items-center gap-2 justify-between mb-1">
                       <div className="flex items-center gap-2">
-                        <span className="font-bold text-sm text-gray-900">{formatted.speaker}</span>
-                        <span className="text-xs text-gray-500">•</span>
-                        <span className="text-xs text-gray-600 italic">{formatted.action}</span>
+                        <span className="font-bold text-sm text-[#e5e2e1]">{formatted.speaker}</span>
+                        <span className="text-xs text-[#3e4850]">&middot;</span>
+                        <span className="text-xs text-[#88929b] italic">{formatted.action}</span>
                       </div>
-                      <span className="text-xs text-gray-400 whitespace-nowrap flex items-center gap-1">
-                        <Clock className="w-3 h-3" />
+                      <span className="text-[10px] text-[#3e4850] whitespace-nowrap flex items-center gap-1 font-bold uppercase tracking-widest">
                         {formatTime(event.timestamp)}
                       </span>
                     </div>
 
-                    {/* Message content */}
-                    <p className="text-sm text-gray-800 leading-relaxed break-words">
+                    {/* Message */}
+                    <p className="text-sm text-[#bec8d2] leading-relaxed break-words">
                       {formatted.message}
                     </p>
 
-                    {/* Status indicator */}
-                    {formatted.style !== 'info' && (
+                    {/* Status badge */}
+                    {formatted.style !== "info" && (
                       <div className="mt-2">
                         <Badge
-                          variant={formatted.style === 'success' ? 'default' : 'outline'}
-                          className={`text-xs ${getStatusBadgeColor(formatted.style)}`}
+                          variant="outline"
+                          className={`text-[10px] uppercase tracking-widest font-bold ${getStatusBadgeColor(formatted.style)}`}
                         >
                           {getStatusIcon(formatted.style)}
                           {formatted.style}
@@ -367,8 +252,8 @@ export function LiveActivityFeed({ projectId, taskId, title = "LIVE ACTIVITY" }:
       </div>
 
       {/* Footer */}
-      <div className="border-t-2 border-black p-3 bg-gray-50 text-xs text-gray-600 font-medium">
-        {filteredEvents.length} events • {connected ? "Connected" : "Connecting..."}
+      <div className="border-t border-[#3e4850]/20 px-5 py-2.5 bg-[#0e0e0e] text-[10px] text-[#88929b] font-bold uppercase tracking-widest rounded-b-lg">
+        {filteredEvents.length} events &middot; {connected ? "Connected" : "Connecting..."}
       </div>
     </div>
   );

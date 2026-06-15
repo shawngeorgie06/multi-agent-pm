@@ -100,7 +100,7 @@ export function CreateTaskModal({ projectId, isOpen, onClose, onTaskCreated }: C
             <textarea
               value={description}
               onChange={(e) => setDescription(e.target.value)}
-              placeholder="e.g., Build an expense tracker, Create a todo app, Build a weather dashboard, etc."
+              placeholder="Describe what you want to build..."
               className="w-full p-3 border-2 border-gray-300 rounded-lg focus:border-black focus:outline-none font-medium resize-none"
               rows={4}
             />

@@ -40,10 +40,28 @@
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
+
+  /* Deep Space surface tokens */
+  --color-ds-surface: #131313;
+  --color-ds-surface-container: #201f1f;
+  --color-ds-surface-container-low: #1c1b1b;
+  --color-ds-surface-container-high: #2a2a2a;
+  --color-ds-surface-container-highest: #353534;
+  --color-ds-surface-container-lowest: #0e0e0e;
+  --color-ds-on-surface: #e5e2e1;
+  --color-ds-on-surface-variant: #bec8d2;
+  --color-ds-primary: #0EA5E9;
+  --color-ds-primary-fixed-dim: #89ceff;
+  --color-ds-primary-container: #0ea5e9;
+  --color-ds-on-primary-container: #003751;
+  --color-ds-secondary: #c2c6d8;
+  --color-ds-tertiary: #4edea3;
+  --color-ds-outline: #88929b;
+  --color-ds-outline-variant: #3e4850;
+  --color-ds-error: #ffb4ab;
 }
 
 :root {
-  /* Bold, Distinctive Design - High Contrast */
   --primary: #1f2937;
   --primary-foreground: #ffffff;
   --sidebar-primary: #1f2937;
@@ -120,7 +138,7 @@
   }
   body {
     @apply bg-background text-foreground;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", sans-serif;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", sans-serif;
   }
   button:not(:disabled),
   [role="button"]:not([aria-disabled="true"]),
@@ -133,38 +151,12 @@
   input[type="radio"]:not(:disabled) {
     @apply cursor-pointer;
   }
+  .material-symbols-outlined {
+    font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+  }
 }
 
 @layer components {
-  /* Bold Typography */
-  @import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Space+Grotesk:wght@400;500;600;700&display=swap');
-
-  h1, h2, h3, h4, h5, h6 {
-    font-family: 'Space Grotesk', sans-serif;
-    font-weight: 700;
-    letter-spacing: -1px;
-  }
-
-  h1 {
-    @apply text-6xl md:text-7xl lg:text-8xl;
-    line-height: 1.1;
-  }
-
-  h2 {
-    @apply text-4xl md:text-5xl lg:text-6xl;
-    line-height: 1.2;
-  }
-
-  h3 {
-    @apply text-2xl md:text-3xl;
-  }
-
-  /* Bold accent lines */
-  .accent-line {
-    @apply h-1 bg-red-500 rounded-full;
-  }
-
-  /* Container */
   .container {
     width: 100%;
     margin-left: auto;
@@ -193,7 +185,40 @@
     }
   }
 
-  /* Bold card with strong borders */
+  /* Deep Space styles */
+  .glass-panel {
+    backdrop-filter: blur(16px);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+  }
+
+  .ds-asymmetric-grid {
+    display: grid;
+    grid-template-columns: 1fr 400px;
+    gap: 2rem;
+  }
+  @media (max-width: 1280px) {
+    .ds-asymmetric-grid {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  .dash-line {
+    stroke-dasharray: 8;
+    animation: dash 30s linear infinite;
+  }
+  @keyframes dash {
+    to { stroke-dashoffset: -1000; }
+  }
+
+  .pulse-soft {
+    animation: pulse-soft 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  }
+  @keyframes pulse-soft {
+    0%, 100% { opacity: 0.1; }
+    50% { opacity: 0.3; }
+  }
+
+  /* Bold card - kept for Home page */
   .bold-card {
     @apply bg-white border-2 border-black rounded-lg p-6;
     box-shadow: 8px 8px 0 rgba(0, 0, 0, 0.1);
@@ -202,19 +227,5 @@
   .bold-card:hover {
     box-shadow: 12px 12px 0 rgba(0, 0, 0, 0.15);
     transform: translate(-2px, -2px);
-  }
-
-  /* Connection lines for agent network */
-  .agent-network {
-    position: relative;
-  }
-
-  .agent-network::before {
-    content: '';
-    position: absolute;
-    inset: 0;
-    background: linear-gradient(135deg, transparent 48%, #3b82f6 48%, #3b82f6 52%, transparent 52%);
-    pointer-events: none;
-    opacity: 0.1;
   }
 }

@@ -1,10 +1,12 @@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { CheckCircle2, Activity, AlertCircle, Clock, X, Code2, Zap } from "lucide-react";
-import { useState } from "react";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { CheckCircle2, Activity, AlertCircle, Clock, X, Code2, Zap, Copy, Check } from "lucide-react";
+import { useState, useEffect } from "react";
 import { PreviewModal } from "./PreviewModal";
 import type { Task } from "@/hooks/useProjects";
+import { API_URL } from "@/lib/api";
 
 interface TaskDetailModalProps {
   task: Task | null;
@@ -14,6 +16,47 @@ interface TaskDetailModalProps {
 
 export function TaskDetailModal({ task, isOpen, onClose }: TaskDetailModalProps) {
   const [showPreview, setShowPreview] = useState(false);
+  const [previewCode, setPreviewCode] = useState<string | null>(null);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const [copiedSection, setCopiedSection] = useState<string | null>(null);
+
+  // When the preview is opened, fetch the combined HTML+CSS+JS from the backend preview endpoint
+  useEffect(() => {
+    if (!showPreview || !task) {
+      return;
+    }
+
+    let isCancelled = false;
+    setPreviewError(null);
+
+    const loadPreview = async () => {
+      try {
+        const res = await fetch(
+          `${API_URL}/api/projects/${task.projectId}/tasks/${task.id}/preview`
+        );
+        if (!res.ok) {
+          throw new Error("Failed to load preview");
+        }
+        const html = await res.text();
+        if (!isCancelled) {
+          setPreviewCode(html);
+        }
+      } catch (err) {
+        if (!isCancelled) {
+          const message =
+            err instanceof Error ? err.message : "Failed to load preview";
+          setPreviewError(message);
+          // Fallback: leave previewCode as null so we still show the task's raw generatedCode if present
+        }
+      }
+    };
+
+    loadPreview();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [showPreview, task]);
 
   if (!task) return null;
 
@@ -166,19 +209,122 @@ export function TaskDetailModal({ task, isOpen, onClose }: TaskDetailModalProps)
             </div>
           )}
 
-          {/* Generated Code */}
+          {/* Generated Code with Tabs */}
           {task.generatedCode && (
             <div>
-              <p className="text-xs font-bold text-gray-600 mb-2 flex items-center gap-2">
+              <p className="text-xs font-bold text-gray-600 mb-3 flex items-center gap-2">
                 <Code2 className="w-4 h-4" />
                 GENERATED CODE
               </p>
-              <div className="bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto border-2 border-black">
-                <pre className="text-xs font-mono whitespace-pre-wrap break-words">
-                  {task.generatedCode.substring(0, 500)}
-                  {task.generatedCode.length > 500 && "..."}
-                </pre>
-              </div>
+              <Tabs defaultValue="html" className="w-full">
+                <TabsList className="grid w-full grid-cols-3 bg-gray-100 rounded-lg p-1 mb-4 border-2 border-black">
+                  <TabsTrigger value="html" className="rounded-md data-[state=active]:bg-black data-[state=active]:text-white font-bold text-xs">
+                    HTML
+                  </TabsTrigger>
+                  <TabsTrigger value="css" className="rounded-md data-[state=active]:bg-black data-[state=active]:text-white font-bold text-xs">
+                    CSS
+                  </TabsTrigger>
+                  <TabsTrigger value="js" className="rounded-md data-[state=active]:bg-black data-[state=active]:text-white font-bold text-xs">
+                    JavaScript
+                  </TabsTrigger>
+                </TabsList>
+
+                <TabsContent value="html" className="space-y-2">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-xs font-medium text-gray-600">HTML Structure</span>
+                    <button
+                      onClick={() => {
+                        const htmlContent = task.generatedCode.match(/<html[\s\S]*?<\/html>/i)?.[0] || task.generatedCode;
+                        navigator.clipboard.writeText(htmlContent);
+                        setCopiedSection('html');
+                        setTimeout(() => setCopiedSection(null), 2000);
+                      }}
+                      className="flex items-center gap-1 px-2 py-1 text-xs font-bold bg-gray-100 hover:bg-gray-200 rounded border-1 border-gray-300 transition-colors"
+                    >
+                      {copiedSection === 'html' ? (
+                        <>
+                          <Check className="w-3 h-3" /> Copied
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-3 h-3" /> Copy
+                        </>
+                      )}
+                    </button>
+                  </div>
+                  <div className="bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto border-2 border-black max-h-96">
+                    <pre className="text-xs font-mono whitespace-pre-wrap break-words">
+                      {task.generatedCode.match(/<html[\s\S]*?<\/html>/i)?.[0] || task.generatedCode.substring(0, 1000)}
+                    </pre>
+                  </div>
+                </TabsContent>
+
+                <TabsContent value="css" className="space-y-2">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-xs font-medium text-gray-600">CSS Styling</span>
+                    <button
+                      onClick={() => {
+                        const cssContent = task.generatedCode.match(/<style[\s\S]*?<\/style>/i)?.[0] || 'No CSS found';
+                        navigator.clipboard.writeText(cssContent);
+                        setCopiedSection('css');
+                        setTimeout(() => setCopiedSection(null), 2000);
+                      }}
+                      className="flex items-center gap-1 px-2 py-1 text-xs font-bold bg-gray-100 hover:bg-gray-200 rounded border-1 border-gray-300 transition-colors"
+                    >
+                      {copiedSection === 'css' ? (
+                        <>
+                          <Check className="w-3 h-3" /> Copied
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-3 h-3" /> Copy
+                        </>
+                      )}
+                    </button>
+                  </div>
+                  <div className="bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto border-2 border-black max-h-96">
+                    <pre className="text-xs font-mono whitespace-pre-wrap break-words">
+                      {task.generatedCode.match(/<style[\s\S]*?<\/style>/i)?.[0] || 'No CSS styles found in generated code'}
+                    </pre>
+                  </div>
+                </TabsContent>
+
+                <TabsContent value="js" className="space-y-2">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-xs font-medium text-gray-600">JavaScript Logic</span>
+                    <button
+                      onClick={() => {
+                        const jsContent = task.generatedCode.match(/<script[\s\S]*?<\/script>/i)?.[0] || 'No JavaScript found';
+                        navigator.clipboard.writeText(jsContent);
+                        setCopiedSection('js');
+                        setTimeout(() => setCopiedSection(null), 2000);
+                      }}
+                      className="flex items-center gap-1 px-2 py-1 text-xs font-bold bg-gray-100 hover:bg-gray-200 rounded border-1 border-gray-300 transition-colors"
+                    >
+                      {copiedSection === 'js' ? (
+                        <>
+                          <Check className="w-3 h-3" /> Copied
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-3 h-3" /> Copy
+                        </>
+                      )}
+                    </button>
+                  </div>
+                  <div className="bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto border-2 border-black max-h-96">
+                    <pre className="text-xs font-mono whitespace-pre-wrap break-words">
+                      {task.generatedCode.match(/<script[\s\S]*?<\/script>/i)?.[0] || 'No JavaScript code found in generated code'}
+                    </pre>
+                  </div>
+                </TabsContent>
+              </Tabs>
+
+              {previewError && (
+                <p className="mt-2 text-xs text-red-600 font-medium">
+                  Preview error: {previewError}
+                </p>
+              )}
             </div>
           )}
 
@@ -206,7 +352,7 @@ export function TaskDetailModal({ task, isOpen, onClose }: TaskDetailModalProps)
           <PreviewModal
             isOpen={showPreview}
             onClose={() => setShowPreview(false)}
-            code={task.generatedCode}
+            code={previewCode ?? task.generatedCode}
             taskId={task.taskId}
           />
         )}
