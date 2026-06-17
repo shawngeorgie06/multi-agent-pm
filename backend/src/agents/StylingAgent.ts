@@ -35,18 +35,11 @@ export class StylingAgent extends BaseAgent {
     htmlStructure: string,
     taskContext?: string
   ): Promise<string> {
-    // DISABLED: Template detection was matching wrong templates (e.g. color-picker CSS for calculators)
-    // Always generate custom CSS based on actual HTML structure instead
-    // const template = detectTemplate(projectDescription);
-    // if (template) {
-    //   return template.css;
-    // }
-
     // Extract IDs and classes from HTML for strict targeting
     const elementIds = this.extractElementIds(htmlStructure);
     const elementClasses = this.extractElementClasses(htmlStructure);
 
-    // Fallback to Ollama-based CSS generation if no template matches
+    // Always generate custom CSS purely from the actual HTML structure (no templates).
     const prompt = `You are a Styling Specialist. Create CSS that makes the interface polished and professional.
 
 ## Project

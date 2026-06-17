@@ -35,13 +35,7 @@ export class LogicAgent extends BaseAgent {
     htmlStructure: string,
     taskContext?: string
   ): Promise<string> {
-    // DISABLED: Template detection was matching wrong templates
-    // Always generate custom JavaScript based on actual HTML structure instead
-    // const template = detectTemplate(projectDescription);
-    // if (template) {
-    //   return template.js;
-    // }
-
+    // Always generate custom JavaScript purely from the actual HTML structure (no templates).
     // Extract element IDs from HTML for reference
     const elementIds = this.extractElementIds(htmlStructure);
 

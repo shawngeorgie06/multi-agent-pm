@@ -5,6 +5,7 @@ import { promisify } from 'util';
 import os from 'os';
 import prisma from '../database/db.js';
 import { stripCodeFences } from '../utils/codeExtraction.js';
+import { reconcileVisibilityContract } from '../utils/visibilityReconciliation.js';
 
 export const APPS_DIR = path.join(os.homedir(), 'multi-agent-pm', 'generated-apps');
 
@@ -118,6 +119,16 @@ export class ProjectBuilderService {
     html = stripCodeFences(html);
     css = stripCodeFences(css);
     js = stripCodeFences(js);
+
+    // Close the serial-pipeline contract gap: Styling runs before Logic and can't
+    // know which elements Logic will toggle, so the JS sometimes reveals an element
+    // the CSS never hid (or flips a class the CSS never defined). Guarantee the CSS
+    // supports whatever show/hide the JS actually does. Acts only on strong evidence.
+    const reconciled = reconcileVisibilityContract({ html, css, js });
+    css = reconciled.css;
+    if (reconciled.changes.length) {
+      console.log(`[ProjectBuilder] visibility reconciliation: ${reconciled.changes.join('; ')}`);
+    }
 
     const body = html
       .replace(/<!DOCTYPE[^>]*>/gi, '')

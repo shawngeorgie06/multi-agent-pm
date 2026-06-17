@@ -34,14 +34,7 @@ export class LayoutAgent extends BaseAgent {
     designBrief: DesignBrief,
     taskContext?: string
   ): Promise<string> {
-    // DISABLED: Template detection was matching wrong templates
-    // Always generate custom HTML based on project requirements instead
-    // const template = detectTemplate(projectDescription);
-    // if (template) {
-    //   return template.html;
-    // }
-
-    // Generate custom HTML based on project requirements
+    // Always generate custom HTML purely from the project requirements (no templates).
     const prompt = `You are a Layout Specialist. You create HTML structure with semantic markup and all required elements.
 
 ## Project Requirements

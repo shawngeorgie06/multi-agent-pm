@@ -20,7 +20,6 @@ import { GeminiService } from './services/GeminiService.js';
 import { GitHubModelsService } from './services/GitHubModelsService.js';
 import { GroqService } from './services/GroqService.js';
 import { NvidiaService } from './services/NvidiaService.js';
-import { detectTemplate } from './templates/utils.js';
 import prisma from './database/db.js';
 
 // Load environment variables
@@ -66,12 +65,18 @@ function createGenerationService(serviceType: string): AIService {
     const GROQ_API_KEY = process.env.GROQ_API_KEY;
     if (!GROQ_API_KEY) throw new Error('GROQ_API_KEY not set');
     const GROQ_MODEL = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
+    // Groq counts max_tokens against the per-minute token budget (TPM) at request
+    // time, not just the tokens actually generated. On the free tier (12k TPM) an
+    // 8k reservation nearly maxes the budget per call → constant 429s. Our largest
+    // single-file outputs are ~5k chars (~1.5k tokens), so 4096 is generous headroom
+    // while leaving room for 2 requests/min. Override with GROQ_MAX_TOKENS if needed.
+    const GROQ_MAX_TOKENS = parseInt(process.env.GROQ_MAX_TOKENS ?? '4096');
     const rl: Partial<RateLimitConfig> = {
       minIntervalMs: parseInt(process.env.GROQ_INTERVAL_MS ?? '500'),
       maxRetries:    parseInt(process.env.GROQ_MAX_RETRIES ?? '5'),
     };
-    const svc = new GroqService(GROQ_API_KEY, GROQ_MODEL, { temperature: 0.7, maxTokens: 8192 }, rl);
-    console.log(`[SERVER] Using Groq Cloud (${GROQ_MODEL}) for code generation`);
+    const svc = new GroqService(GROQ_API_KEY, GROQ_MODEL, { temperature: 0.7, maxTokens: GROQ_MAX_TOKENS }, rl);
+    console.log(`[SERVER] Using Groq Cloud (${GROQ_MODEL}, max_tokens=${GROQ_MAX_TOKENS}) for code generation`);
     return svc;
   } else if (serviceType === 'nvidia') {
     const NVIDIA_API_KEY = process.env.NVIDIA_API_KEY;
@@ -559,7 +564,7 @@ httpServer.listen(PORT, () => {
   console.log(`🚀 MULTI-AGENT PM BACKEND`);
   console.log('='.repeat(60));
   console.log(`Server running on http://localhost:${PORT}`);
-  console.log(`AI Service: Gemini API (gemini-2.0-flash)`);
+  console.log(`AI Service: ${generationService.providerName} (${generationService.modelName})`);
   console.log(`Connected clients: ${socketServer.getConnectedClientCount()}`);
   console.log(`${'='.repeat(60)}\n`);
 });

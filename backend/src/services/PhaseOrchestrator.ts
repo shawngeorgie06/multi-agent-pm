@@ -28,7 +28,8 @@ import { TaskDistributionService } from './TaskDistributionService.js';
 import { TaskQueueManager } from './TaskQueueManager.js';
 import { SocketServer } from '../websocket/SocketServer.js';
 import { ProjectBuilderService } from './ProjectBuilderService.js';
-import prisma from '../database/db.js';
+import { TaskStore } from './taskStore/TaskStore.js';
+import { PrismaTaskStore } from './taskStore/PrismaTaskStore.js';
 import { stripCodeFences } from '../utils/codeExtraction.js';
 
 export interface Phase1Output {
@@ -55,7 +56,8 @@ export class PhaseOrchestrator {
     private orchestrator: AgentOrchestrator,
     private messageBus: MessageBus,
     private taskDistributionService: TaskDistributionService,
-    private socketServer: SocketServer
+    private socketServer: SocketServer,
+    private store: TaskStore = new PrismaTaskStore()
   ) {}
 
   /**
@@ -367,7 +369,8 @@ VISUAL POLISH:
 - Every input/select/textarea: border, padding, border-radius, outline: none on :focus + border-color change + box-shadow
 - Cards/panels: background var(--color-surface), border-radius, box-shadow var(--shadow-md), padding
 - Error messages (.error-message): red/warning colour, hidden by default (display: none), shown with .visible class
-- Loading indicators (.loading-indicator): animated, hidden by default
+- Loading indicators (.loading-indicator): animated spinner, hidden by default (display: none), shown with .visible class (.loading-indicator.visible { display: block })
+- Any element the JS shows/hides at runtime MUST be hidden by default and revealed with a .visible class — keep this contract consistent so the JS toggling "visible" actually works
 
 TYPOGRAPHY:
 - h1: 2rem–2.5rem, font-weight: 800, tight letter-spacing
@@ -412,6 +415,15 @@ STRICT OUTPUT RULES:
 - Reference ONLY the IDs listed above — never getElementById/querySelector with an ID not in that list
 - Wrap ALL code in: document.addEventListener('DOMContentLoaded', () => { ... })
 
+SHOW/HIDE CONVENTION (the CSS hides .error-message and .loading-indicator by default and reveals them with a "visible" class — you MUST match this contract):
+- To show an element: element.classList.add('visible'). To hide it: element.classList.remove('visible').
+- NEVER invent class names like "hidden", and NEVER set element.style.display directly — that silently does nothing because the CSS uses the "visible" class. This is the #1 cause of dead show/hide logic.
+
+FORM SUBMISSION CONVENTION (the #1 cause of "Enter reloads the page and nothing happens" bugs):
+- When an input is inside a <form>, the browser ALREADY fires the form's "submit" event on Enter. Handle it: form.addEventListener('submit', (e) => { e.preventDefault(); ...your logic... }). Do NOT also add a keydown/Enter listener for that input — it is redundant.
+- NEVER call form.submit() to run your logic. The native form.submit() method does NOT fire the "submit" event and ignores preventDefault, so it performs a full page reload and your handler never runs. If you must submit programmatically, call form.requestSubmit() instead.
+- For an input that is NOT inside a <form>, add a keydown listener and call your primary-action function directly (never form.submit()).
+
 FUNCTIONALITY (implement 100% — no TODOs, no stubs):
 - Every button, input, form, and interactive element must have a working event listener
 - Every user action must produce visible feedback — never silently fail
@@ -421,6 +433,8 @@ DATA & STATE:
 - Persist user data with localStorage where appropriate (lists, settings, scores)
 - Use a single state object or clear module-level variables — no scattered globals
 - When loading saved data on page start, handle missing/corrupted data gracefully (JSON.parse in try/catch)
+- Initialise your state from the ACTUAL current values of the form controls on load (read select.value, input.value). A <select> already has its first <option> selected, so do NOT assume an untouched control is empty/zero — read it, or the first action before any "change" event will use stale defaults and fail.
+- When a control uses a non-numeric sentinel option value (e.g. <option value="custom">), branch on the raw string value FIRST, then read the real number from its companion input. NEVER parseInt/parseFloat a sentinel — parseInt('custom') is NaN and silently breaks every comparison after it.
 
 ERROR HANDLING & VALIDATION:
 - Validate all inputs before processing: check for empty, out-of-range, wrong type
@@ -433,7 +447,7 @@ LOADING STATES:
 - Disable the triggering button during async operations (button.disabled = true/false)
 
 UX POLISH:
-- Support Enter key on text inputs as equivalent to clicking the primary action button
+- Pressing Enter triggers the primary action — but obey the FORM SUBMISSION CONVENTION above: for inputs inside a <form> rely on the form's "submit" event, never form.submit()
 - Auto-focus the primary input on page load
 - Animate dynamically inserted items: add a CSS class (e.g. "fade-in") immediately after insertion
 - Format numbers with toLocaleString() where displayed to users
@@ -538,7 +552,7 @@ Generate the complete Node.js server now:`;
     console.log('='.repeat(80));
 
     // Re-open project so the Dashboard shows agents working after the Phase 1 preview
-    await prisma.project.update({ where: { id: projectId }, data: { status: 'in_progress' } });
+    await this.store.setProjectStatus(projectId, 'in_progress');
     this.socketServer.emitProjectStatus(projectId, 'in_progress', 'Phase 3: Agent refinement pipeline starting…');
 
     try {
@@ -561,8 +575,8 @@ Generate the complete Node.js server now:`;
       try {
         css = await this.refineDesign(gen, userRequest, html, css);
         // Persist improved CSS to the DB task record
-        const dbStyling = await prisma.task.findFirst({ where: { projectId, taskId: { contains: 'STYLING' } } });
-        if (dbStyling) await prisma.task.update({ where: { id: dbStyling.id }, data: { generatedCode: css } });
+        const dbStyling = await this.store.findTaskByTaskIdContains(projectId, 'STYLING');
+        if (dbStyling) await this.store.saveGeneratedCode(dbStyling.id, css);
         console.log('✅ CSS refined');
         this.socketServer.emitAgentActivity(projectId, 'DESIGN_DIRECTOR', 'Visual design enhanced ✓');
       } catch (e) {
@@ -575,8 +589,8 @@ Generate the complete Node.js server now:`;
       this.socketServer.emitAgentActivity(projectId, 'LOGIC', 'Reviewing JavaScript logic…');
       try {
         js = await this.refineLogic(gen, userRequest, html, js);
-        const dbLogic = await prisma.task.findFirst({ where: { projectId, taskId: { contains: 'LOGIC' } } });
-        if (dbLogic) await prisma.task.update({ where: { id: dbLogic.id }, data: { generatedCode: js } });
+        const dbLogic = await this.store.findTaskByTaskIdContains(projectId, 'LOGIC');
+        if (dbLogic) await this.store.saveGeneratedCode(dbLogic.id, js);
         console.log('✅ JS refined');
         this.socketServer.emitAgentActivity(projectId, 'LOGIC', 'Logic refined ✓');
       } catch (e) {
@@ -590,7 +604,7 @@ Generate the complete Node.js server now:`;
       try {
         const qaReport = await this.runQACheck(gen, userRequest, html, css, js);
         this.socketServer.emitQAReport(projectId, qaReport);
-        await prisma.project.update({ where: { id: projectId }, data: { qaReport: JSON.stringify(qaReport) } });
+        await this.store.setProjectQaReport(projectId, JSON.stringify(qaReport));
         console.log(`✅ QA complete — ${qaReport.status}`);
         this.socketServer.emitAgentActivity(projectId, 'QA', `QA complete — ${qaReport.status} ✓`);
       } catch (e) {
@@ -610,7 +624,7 @@ Generate the complete Node.js server now:`;
     } catch (error) {
       console.error('❌ PHASE 3 FAILED:', error);
       // Don't fail the whole project — Phase 1 preview is already live
-      await prisma.project.update({ where: { id: projectId }, data: { status: 'completed' } });
+      await this.store.setProjectStatus(projectId, 'completed');
       this.socketServer.emitProjectStatus(projectId, 'completed', 'Phase 1 build complete (refinement pass failed).');
       return { projectId, status: 'execution_started' };
     }
@@ -678,7 +692,7 @@ THEN DO THESE:
 
 4. MISSING HANDLERS: Verify EVERY button, input, form, select, and link in the HTML has an event listener. If any are missing, add them now.
 
-5. KEYBOARD UX: Text inputs should submit on Enter (equivalent to clicking the primary action). Add keydown listeners where relevant.
+5. KEYBOARD UX: Pressing Enter in a text input triggers the primary action. If the input is inside a <form>, handle the form's "submit" event with preventDefault — do NOT call form.submit() (it bypasses your handler and reloads the page; use form.requestSubmit() only if you must submit programmatically). Add a keydown listener ONLY for inputs that are not inside a form.
 
 6. DATA PERSISTENCE: If the app manages a list, settings, scores, or user data — save to localStorage on every change. Reload from localStorage on DOMContentLoaded with graceful fallback.
 
@@ -764,31 +778,15 @@ Include at least 4 functional tests covering the core user flows. Include at lea
       const uniqueTaskId = `${task.taskId}-${projectId.substring(0, 8)}`;
 
       try {
-        const savedTask = await prisma.task.upsert({
-          where: {
-            projectId_taskId: {
-              projectId,
-              taskId: uniqueTaskId,
-            },
-          },
-          update: {
-            description: task.description,
-            status: task.status,
-            priority: task.priority,
-            estimatedHours: task.estimatedHours,
-            dependencies: task.dependencies || [],
-            generatedCode: task.generatedCode ?? null,
-          },
-          create: {
-            projectId,
-            taskId: uniqueTaskId,
-            description: task.description,
-            status: task.status,
-            priority: task.priority,
-            estimatedHours: task.estimatedHours,
-            dependencies: task.dependencies || [],
-            generatedCode: task.generatedCode ?? null,
-          },
+        const savedTask = await this.store.upsertTask({
+          projectId,
+          taskId: uniqueTaskId,
+          description: task.description,
+          status: task.status,
+          priority: task.priority,
+          estimatedHours: task.estimatedHours,
+          dependencies: task.dependencies || [],
+          generatedCode: task.generatedCode ?? null,
         });
 
         savedTasks.push(savedTask);
@@ -806,9 +804,7 @@ Include at least 4 functional tests covering the core user flows. Include at lea
     originalTasks: any[]
   ): Promise<void> {
     // Clear any existing queue entries
-    await prisma.taskQueue.deleteMany({
-      where: { projectId },
-    });
+    await this.store.clearQueueForProject(projectId);
 
     // Create new queue entries with Task.id (UUID)
     // Skip tasks that are already COMPLETE — Phase 1 already generated their code
@@ -824,14 +820,12 @@ Include at least 4 functional tests covering the core user flows. Include at lea
       try {
         const inferredType = this.inferAgentType(task);
 
-        await prisma.taskQueue.create({
-          data: {
-            taskId: savedTask.id, // Use UUID
-            projectId,
-            agentType: inferredType as any,
-            priority: task.priority || 'MEDIUM',
-            requiredCapabilities: [],
-          },
+        await this.store.enqueueTask({
+          taskId: savedTask.id, // Use UUID
+          projectId,
+          agentType: inferredType,
+          priority: task.priority || 'MEDIUM',
+          requiredCapabilities: [],
         });
       } catch (err: any) {
         if (!err.message.includes('Unique constraint')) {
