@@ -9,7 +9,8 @@
 import { MessageBus } from './MessageBus.js';
 import { TaskQueueManager } from './TaskQueueManager.js';
 import { SocketServer } from '../websocket/SocketServer.js';
-import prisma from '../database/db.js';
+import { TaskStore } from './taskStore/TaskStore.js';
+import { PrismaTaskStore } from './taskStore/PrismaTaskStore.js';
 import { decideTaskFailureOutcome, MAX_TASK_RETRIES } from './TaskRetryPolicy.js';
 import { staleClaimCutoff, CLAIM_STALE_TIMEOUT_MS } from './StaleClaimPolicy.js';
 import { isAgentUnresponsive, AGENT_HEARTBEAT_TIMEOUT_MS } from './AgentLivenessPolicy.js';
@@ -73,7 +74,8 @@ export class TaskDistributionService {
   constructor(
     private messageBus: MessageBus,
     private taskQueueManager: TaskQueueManager,
-    private socketServer?: SocketServer
+    private socketServer?: SocketServer,
+    private store: TaskStore = new PrismaTaskStore()
   ) {
     this.setupEventListeners();
   }
@@ -129,20 +131,10 @@ export class TaskDistributionService {
             agent.isBusy = agent.currentTaskCount > 0;
           }
 
-          const updatedTask = await prisma.task.update({
-            where: { id: message.taskId },
-            data: {
-              status: 'COMPLETE',
-              completedBy: message.agentId,
-              completedAt: new Date(),
-              generatedCode: message.generatedCode || undefined
-            }
-          });
+          const updatedTask = await this.store.markTaskComplete(message.taskId, { completedBy: message.agentId, generatedCode: message.generatedCode || undefined });
 
           // Remove from queue
-          await prisma.taskQueue.deleteMany({
-            where: { taskId: message.taskId }
-          });
+          await this.store.removeFromQueueByTask(message.taskId);
 
           // Notify via WebSocket with full task data (including generatedCode)
           if (this.socketServer && message.projectId) {
@@ -172,22 +164,13 @@ export class TaskDistributionService {
           // Decide whether to retry or give up, based on how many times this
           // task has already failed. This prevents a deterministically-failing
           // task from looping forever (claim -> fail -> TODO -> claim -> ...).
-          const failingTask = await prisma.task.findUnique({
-            where: { id: message.taskId },
-            select: { retryCount: true }
-          });
+          const failingTask = await this.store.getTaskById(message.taskId);
           const outcome = decideTaskFailureOutcome(failingTask?.retryCount ?? 0);
 
           if (outcome.action === 'retry') {
             // Release the claim so another agent can pick it up, bump the count.
-            await prisma.taskQueue.updateMany({
-              where: { taskId: message.taskId },
-              data: { claimedBy: null, claimedAt: null }
-            });
-            await prisma.task.update({
-              where: { id: message.taskId },
-              data: { status: outcome.nextStatus, retryCount: outcome.nextRetryCount }
-            });
+            await this.store.releaseQueueClaimsByTask(message.taskId);
+            await this.store.requeueFailedTask(message.taskId, { status: outcome.nextStatus, retryCount: outcome.nextRetryCount });
 
             if (this.socketServer && message.projectId) {
               this.socketServer.emitTaskFailed(message.projectId, message.taskId, message.error);
@@ -202,15 +185,8 @@ export class TaskDistributionService {
           } else {
             // Retry budget exhausted — dead-letter the task: remove it from the
             // queue, mark it terminally FAILED, and record why.
-            await prisma.taskQueue.deleteMany({ where: { taskId: message.taskId } });
-            await prisma.task.update({
-              where: { id: message.taskId },
-              data: {
-                status: outcome.nextStatus,
-                retryCount: outcome.nextRetryCount,
-                blockerMessage: `Failed after ${outcome.nextRetryCount} retries: ${message.error ?? 'unknown error'}`
-              }
-            });
+            await this.store.removeFromQueueByTask(message.taskId);
+            await this.store.deadLetterTask(message.taskId, { status: outcome.nextStatus, retryCount: outcome.nextRetryCount, blockerMessage: `Failed after ${outcome.nextRetryCount} retries: ${message.error ?? 'unknown error'}` });
 
             if (this.socketServer && message.projectId) {
               this.socketServer.emitTaskFailed(message.projectId, message.taskId, message.error);
@@ -237,15 +213,7 @@ export class TaskDistributionService {
 
         // When an agent comes online, distribute all unclaimed tasks
         try {
-          const unclaimedTasks = await prisma.taskQueue.findMany({
-            where: {
-              claimedBy: null
-            },
-            distinct: ['projectId']
-          });
-
-          // Get unique projectIds and distribute tasks for each
-          const projectIds = new Set(unclaimedTasks.map((t: any) => t.projectId));
+          const projectIds = await this.store.getProjectsWithUnclaimedTasks();
           for (const projectId of projectIds) {
             console.log(`[TaskDistribution] Agent ${message.agentId} online - distributing tasks for project ${projectId}`);
             await this.distributeQueuedTasksInParallel(projectId);
@@ -273,12 +241,7 @@ export class TaskDistributionService {
   async distributeQueuedTasks(projectId: string): Promise<void> {
     try {
       // Get all unclaimed tasks for this project
-      const queuedTasks = await prisma.taskQueue.findMany({
-        where: {
-          projectId,
-          claimedBy: null
-        }
-      });
+      const queuedTasks = await this.store.getUnclaimedQueueEntries(projectId);
 
       console.log(`[TaskDistribution] Distributing ${queuedTasks.length} unclaimed tasks for project ${projectId}`);
 
@@ -315,16 +278,7 @@ export class TaskDistributionService {
       await this.reclaimStaleClaims(projectId);
 
       // Get all unclaimed tasks for this project, sorted by priority
-      const queuedTasks = await prisma.taskQueue.findMany({
-        where: {
-          projectId,
-          claimedBy: null
-        },
-        orderBy: [
-          { priority: 'asc' }, // HIGH (0) before MEDIUM (1) before LOW (2)
-          { id: 'asc' } // Consistent ordering
-        ]
-      });
+      const queuedTasks = await this.store.getUnclaimedQueueEntries(projectId);
 
       if (queuedTasks.length === 0) {
         console.log(`[TaskDistribution] No unclaimed tasks to distribute for project ${projectId}`);
@@ -334,10 +288,7 @@ export class TaskDistributionService {
       console.log(`[TaskDistribution] Starting distribution of ${queuedTasks.length} tasks for project ${projectId}`);
 
       // Get all tasks for this project to check dependencies
-      const allTasks = await prisma.task.findMany({
-        where: { projectId },
-        select: { id: true, taskId: true, status: true, dependencies: true }
-      });
+      const allTasks = await this.store.getTasksByProject(projectId);
 
       // Filter tasks that have all dependencies met
       const readyTasks = [];
@@ -428,22 +379,13 @@ export class TaskDistributionService {
       }
 
       // Fetch task details to get dependencies and build context
-      const taskDetails = await prisma.task.findUnique({
-        where: { id: task.taskId },
-        select: { dependencies: true }
-      });
+      const taskDetails = await this.store.getTaskById(task.taskId);
 
       // Build context from completed dependency tasks
       const context: Record<string, any> = {};
       if (taskDetails?.dependencies && taskDetails.dependencies.length > 0) {
         // Fetch all completed tasks for this project
-        const completedTasks = await prisma.task.findMany({
-          where: {
-            projectId,
-            status: 'COMPLETE'
-          },
-          select: { taskId: true, generatedCode: true }
-        });
+        const completedTasks = await this.store.getCompletedTasks(projectId);
 
         // Map dependency outputs to context
         for (const depTaskId of taskDetails.dependencies) {
@@ -690,22 +632,10 @@ export class TaskDistributionService {
 
       // Create queue entries (skip if already exist for this task+project combo)
       for (const entry of queueEntries) {
-        try {
-          await prisma.taskQueue.create({
-            data: {
-              taskId: entry.taskId,
-              projectId: entry.projectId,
-              agentType: entry.agentType as any, // Cast to allow enum values
-              priority: entry.priority,
-              requiredCapabilities: entry.requiredCapabilities
-            }
-          });
-        } catch (err: any) {
-          // Silently ignore duplicate key errors
-          if (!err.message.includes('Unique constraint')) {
-            throw err;
-          }
-        }
+        await this.store.enqueueTask({
+          taskId: entry.taskId, projectId: entry.projectId, agentType: entry.agentType,
+          priority: entry.priority, requiredCapabilities: entry.requiredCapabilities,
+        });
       }
 
       console.log(`[TaskDistribution] Populated queue with ${queueEntries.length} entries`);
@@ -729,17 +659,7 @@ export class TaskDistributionService {
    */
   async getQueueStats(projectId: string): Promise<any> {
     try {
-      const total = await prisma.taskQueue.count({
-        where: { projectId }
-      });
-
-      const unclaimed = await prisma.taskQueue.count({
-        where: { projectId, claimedBy: null }
-      });
-
-      const claimed = await prisma.taskQueue.count({
-        where: { projectId, claimedBy: { not: null } }
-      });
+      const { total, unclaimed, claimed } = await this.store.countQueue(projectId);
 
       return {
         projectId,
@@ -840,19 +760,14 @@ export class TaskDistributionService {
    */
   private async reclaimTasksFromAgent(agentId: string): Promise<number> {
     try {
-      const tasks = await prisma.taskQueue.findMany({
-        where: { claimedBy: agentId }
-      });
+      const tasks = await this.store.getClaimedQueueEntriesByAgent(agentId);
 
       if (tasks.length === 0) return 0;
 
       console.log(`[TaskDistribution] Reclaiming ${tasks.length} task(s) from agent ${agentId}`);
 
       for (const task of tasks) {
-        await prisma.taskQueue.update({
-          where: { id: task.id },
-          data: { claimedBy: null, claimedAt: null }
-        });
+        await this.store.releaseQueueClaimById(task.id);
       }
 
       // Re-distribute per affected project.
@@ -881,21 +796,12 @@ export class TaskDistributionService {
     try {
       const cutoff = staleClaimCutoff(new Date(), this.claimStaleTimeoutMs);
 
-      const staleClaims = await prisma.taskQueue.findMany({
-        where: {
-          projectId,
-          claimedBy: { not: null },
-          claimedAt: { lt: cutoff }
-        }
-      });
+      const staleClaims = await this.store.getStaleClaims(projectId, cutoff);
 
       if (staleClaims.length === 0) return 0;
 
       for (const claim of staleClaims) {
-        await prisma.taskQueue.update({
-          where: { id: claim.id },
-          data: { claimedBy: null, claimedAt: null }
-        });
+        await this.store.releaseQueueClaimById(claim.id);
         console.warn(
           `[TaskDistribution] Reclaimed stale task ${claim.taskId} from agent ${claim.claimedBy} (claimed at ${claim.claimedAt?.toISOString()})`
         );

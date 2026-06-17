@@ -3,7 +3,8 @@
  * Provides utilities for agents to claim and execute tasks from TaskQueue
  */
 
-import prisma from '../database/db.js';
+import { TaskStore } from './taskStore/TaskStore.js';
+import { PrismaTaskStore } from './taskStore/PrismaTaskStore.js';
 import { TaskQueueManager } from './TaskQueueManager.js';
 import { MessageBus } from './MessageBus.js';
 
@@ -16,7 +17,8 @@ export interface AgentClaimConfig {
 export class AgentClaimingHelper {
   constructor(
     private config: AgentClaimConfig,
-    private messageBus?: MessageBus
+    private messageBus?: MessageBus,
+    private store: TaskStore = new PrismaTaskStore()
   ) {}
 
   /**
@@ -45,20 +47,8 @@ export class AgentClaimingHelper {
   async claimTask(taskId: string, projectId: string): Promise<boolean> {
     try {
       // Atomic update: only claim if still unclaimed (claimedBy is null)
-      const result = await prisma.taskQueue.updateMany({
-        where: {
-          taskId,
-          projectId,
-          claimedBy: null // Only claim if unclaimed
-        },
-        data: {
-          claimedBy: this.config.agentId,
-          claimedAt: new Date()
-        }
-      });
-
-      if (result.count === 0) {
-        // Another agent claimed it first
+      const claimed = await this.store.claimQueueEntry(taskId, projectId, this.config.agentId);
+      if (!claimed) {
         console.log(`[${this.config.agentId}] Task ${taskId} already claimed by another agent`);
         return false;
       }
@@ -66,14 +56,7 @@ export class AgentClaimingHelper {
       console.log(`[${this.config.agentId}] Successfully claimed task ${taskId}`);
 
       // Also update the Task status
-      await prisma.task.updateMany({
-        where: { id: taskId },
-        data: {
-          status: 'IN_PROGRESS',
-          claimedBy: this.config.agentId,
-          claimedAt: new Date()
-        }
-      });
+      await this.store.claimTaskRecord(taskId, this.config.agentId);
 
       // Emit event that task was claimed
       if (this.messageBus) {
@@ -102,15 +85,7 @@ export class AgentClaimingHelper {
     generatedCode?: string
   ): Promise<void> {
     try {
-      await prisma.task.updateMany({
-        where: { id: taskId },
-        data: {
-          status: 'COMPLETE',
-          completedBy: this.config.agentId,
-          completedAt: new Date(),
-          generatedCode: generatedCode || null
-        }
-      });
+      await this.store.completeTaskRecord(taskId, this.config.agentId, generatedCode);
 
       if (this.messageBus) {
         this.messageBus.broadcast({
@@ -135,12 +110,7 @@ export class AgentClaimingHelper {
     try {
       const errorMsg = error instanceof Error ? error.message : String(error);
 
-      await prisma.task.updateMany({
-        where: { id: taskId },
-        data: {
-          status: 'TODO' // Reset to TODO for retry
-        }
-      });
+      await this.store.resetTaskRecordToTodo(taskId);
 
       if (this.messageBus) {
         this.messageBus.broadcast({
@@ -163,14 +133,7 @@ export class AgentClaimingHelper {
    */
   async getNextAvailableTask(projectId: string): Promise<any | null> {
     try {
-      const task = await prisma.taskQueue.findFirst({
-        where: {
-          projectId,
-          claimedBy: null,
-          agentType: this.config.agentType
-        },
-        orderBy: { priority: 'desc' } // HIGH priority first
-      });
+      const task = await this.store.findClaimableTask(projectId, this.config.agentType);
 
       return task;
     } catch (error) {
